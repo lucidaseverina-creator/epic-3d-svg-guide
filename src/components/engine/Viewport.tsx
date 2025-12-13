@@ -169,19 +169,13 @@ export const Viewport: React.FC<ViewportProps> = ({
     return path;
   }, []);
   
-  // Group faces by object
-  const groupedFaces = useMemo(() => {
-    const groups: Record<string, ProjectedFace[]> = {};
-    
+  // Count unique objects for stats
+  const objectCount = useMemo(() => {
+    const ids = new Set<string>();
     for (const face of projectedFaces) {
-      const objectId = face.objectId || 'unknown';
-      if (!groups[objectId]) {
-        groups[objectId] = [];
-      }
-      groups[objectId].push(face);
+      if (face.objectId) ids.add(face.objectId);
     }
-    
-    return groups;
+    return ids.size;
   }, [projectedFaces]);
   
   return (
@@ -237,44 +231,41 @@ export const Viewport: React.FC<ViewportProps> = ({
           </filter>
         </defs>
         
-        {/* Render faces grouped by object */}
-        {Object.entries(groupedFaces).map(([objectId, faces]) => (
-          <g key={objectId}>
-            {faces.map((face, index) => {
-              const pathData = generatePath(face);
+        {/* Render faces in depth-sorted order (painter's algorithm) */}
+        {projectedFaces.map((face, index) => {
+          const pathData = generatePath(face);
+          const objectId = face.objectId || 'unknown';
+          
+          return (
+            <g key={index}>
+              {/* Main face */}
+              <path
+                d={pathData}
+                fill={face.color}
+                stroke="rgba(0,0,0,0.15)"
+                strokeWidth={0.5}
+                onClick={(e) => handleFaceClick(e, objectId)}
+                style={{ 
+                  cursor: activeTool === 'select' ? 'pointer' : getCursor(),
+                }}
+              />
               
-              return (
-                <g key={index}>
-                  {/* Main face */}
-                  <path
-                    d={pathData}
-                    fill={face.color}
-                    stroke="rgba(0,0,0,0.2)"
-                    strokeWidth={0.5}
-                    onClick={(e) => handleFaceClick(e, objectId)}
-                    style={{ 
-                      cursor: activeTool === 'select' ? 'pointer' : getCursor(),
-                    }}
-                  />
-                  
-                  {/* Selection highlight */}
-                  {face.isSelected && (
-                    <path
-                      d={pathData}
-                      fill="none"
-                      stroke="url(#selectionGradient)"
-                      strokeWidth={3}
-                      filter="url(#selectionGlow)"
-                      opacity={0.8}
-                      pointerEvents="none"
-                      className="selection-glow"
-                    />
-                  )}
-                </g>
-              );
-            })}
-          </g>
-        ))}
+              {/* Selection highlight */}
+              {face.isSelected && (
+                <path
+                  d={pathData}
+                  fill="none"
+                  stroke="url(#selectionGradient)"
+                  strokeWidth={3}
+                  filter="url(#selectionGlow)"
+                  opacity={0.8}
+                  pointerEvents="none"
+                  className="selection-glow"
+                />
+              )}
+            </g>
+          );
+        })}
         
         {/* Center axis indicator */}
         <g opacity={0.6}>
@@ -300,7 +291,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       {/* Viewport overlay info */}
       <div className="absolute top-3 left-3 stats-display">
         <div>{viewportSize.width} × {viewportSize.height}</div>
-        <div>Objects: {Object.keys(groupedFaces).length}</div>
+        <div>Objects: {objectCount}</div>
         <div>Faces: {projectedFaces.length}</div>
       </div>
     </div>
