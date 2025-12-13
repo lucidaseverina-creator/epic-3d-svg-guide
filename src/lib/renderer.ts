@@ -120,13 +120,15 @@ export const renderScene = (
         rotateEuler(v, scene.camera.rotation)
       );
       
-      // Calculate normal for lighting
+      // Calculate face center for depth
+      const center = calculateCenter(rotatedVerts);
+      
+      // Calculate normal for lighting and backface culling
       const normal = calculateNormal(rotatedVerts);
       
-      // Backface culling
-      const center = calculateCenter(rotatedVerts);
-      const viewDir = normalize({ x: 0, y: 0, z: 1 });
-      if (dot(normal, viewDir) < 0) continue;
+      // Backface culling: cull if normal points away from camera (z < 0 means facing away)
+      // The camera looks down -Z in our coordinate system after rotation
+      if (normal.z < 0) continue;
       
       // Calculate lighting
       const lightIntensity = calculateLighting(normal, scene.lights, scene.camera.rotation);
@@ -139,8 +141,8 @@ export const renderScene = (
         project(v, viewportWidth, viewportHeight, config.fov, config.cameraZ)
       );
       
-      // Calculate depth for sorting
-      const depth = rotatedVerts.reduce((sum, v) => sum + v.z, 0) / rotatedVerts.length;
+      // Use center Z for depth (more negative = further from camera)
+      const depth = center.z;
       
       projectedFaces.push({
         verts: rotatedVerts,
@@ -154,7 +156,7 @@ export const renderScene = (
     }
   }
   
-  // Sort by depth (painter's algorithm - render far to near)
+  // Sort by depth: render far to near (more negative z first, then higher z on top)
   projectedFaces.sort((a, b) => a.depth - b.depth);
   
   return projectedFaces;
