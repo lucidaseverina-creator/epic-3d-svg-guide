@@ -35,7 +35,6 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('perspective');
   const [renderMode, setRenderMode] = useState<RenderMode>('solid');
   const [showStats, setShowStats] = useState(false);
-  const [viewportSize, setViewportSize] = useState({ width: 800, height: 600 });
   
   // Animation state
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -60,6 +59,12 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   
   // Render config
   const config = useMemo(() => getDefaultConfig(), []);
+  
+  // Use full window size for rendering
+  const [viewportSize, setViewportSize] = useState({ 
+    width: typeof window !== 'undefined' ? window.innerWidth : 1920, 
+    height: typeof window !== 'undefined' ? window.innerHeight : 1080 
+  });
   
   // Render the scene
   const projectedFaces = useMemo(() => {
@@ -164,7 +169,10 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
               selectedObjectId={scene.selectedObjectId}
               activeTool={activeTool}
               cameraRotation={scene.camera.rotation}
+              cameraPosition={scene.camera.position}
+              cameraFov={scene.camera.fov}
               gridVisible={scene.gridVisible}
+              renderMode={renderMode}
               onObjectClick={selectObject}
               onCameraRotate={rotateCamera}
               onCameraPan={panCamera}

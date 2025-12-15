@@ -117,7 +117,7 @@ export type ToolType = 'select' | 'move' | 'rotate' | 'scale';
 export type EngineType = 'classic' | 'sdflux';
 
 // Render Modes
-export type RenderMode = 'solid' | 'wireframe' | 'xray';
+export type RenderMode = 'solid' | 'wireframe' | 'normals' | 'xray';
 
 // Camera Presets
 export type CameraPreset = 'perspective' | 'front' | 'back' | 'top' | 'left' | 'right';
