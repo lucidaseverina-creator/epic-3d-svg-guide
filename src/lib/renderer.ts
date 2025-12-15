@@ -16,6 +16,8 @@ import {
   dot,
   normalize,
   add,
+  subtract,
+  multiply,
 } from '@/lib/math';
 import { generatePrimitiveFaces } from '@/lib/primitives';
 
@@ -122,17 +124,24 @@ export const renderScene = (
       
       // Calculate face center for depth
       const center = calculateCenter(rotatedVerts);
-      
+
       // Calculate normal for lighting and backface culling
-      const normal = calculateNormal(rotatedVerts);
-      
-      // Backface culling: cull if normal points away from camera (z < 0 means facing away)
-      // The camera looks down -Z in our coordinate system after rotation
-      if (normal.z < 0) continue;
-      
+      let normal = calculateNormal(rotatedVerts);
+
+      // Ensure normals point "outward" from the object's center (robust vs. inconsistent vertex winding)
+      const objCenterCamera = rotateEuler(obj.position, scene.camera.rotation);
+      const outward = normalize(subtract(center, objCenterCamera));
+      if (dot(normal, outward) < 0) {
+        normal = multiply(normal, -1);
+      }
+
+      // Backface culling: camera is effectively at z=-cameraZ looking toward +Z
+      // so faces with normals pointing toward +Z are facing away from the camera.
+      if (normal.z > 0.0001) continue;
+
       // Calculate lighting
       const lightIntensity = calculateLighting(normal, scene.lights, scene.camera.rotation);
-      
+
       // Use object's material color instead of face color
       const litColor = applyLightingToColor(obj.material.color, lightIntensity);
       
