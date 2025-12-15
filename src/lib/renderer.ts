@@ -116,9 +116,14 @@ export const renderScene = (
       const transformedVerts = face.verts.map(v =>
         transformPoint(v, obj.position, obj.rotation, obj.scale)
       );
-      
+
+      // Apply camera position (pan) before camera rotation
+      const cameraTranslatedVerts = transformedVerts.map(v =>
+        add(v, { x: -scene.camera.position.x, y: -scene.camera.position.y, z: 0 })
+      );
+
       // Apply camera rotation
-      const rotatedVerts = transformedVerts.map(v =>
+      const rotatedVerts = cameraTranslatedVerts.map(v =>
         rotateEuler(v, scene.camera.rotation)
       );
       
@@ -141,7 +146,7 @@ export const renderScene = (
       
       // Project vertices
       const projectedVerts = rotatedVerts.map(v =>
-        project(v, viewportWidth, viewportHeight, config.fov, config.cameraZ)
+        project(v, viewportWidth, viewportHeight, config.fov, scene.camera.position.z)
       );
       
       // Use center Z for depth (more negative = further from camera)
@@ -159,8 +164,8 @@ export const renderScene = (
     }
   }
   
-  // Sort by depth: render far to near (more negative z first, then higher z on top)
-  projectedFaces.sort((a, b) => a.depth - b.depth);
-  
+  // Sort by depth: render far to near (larger z is further with our camera)
+  projectedFaces.sort((a, b) => b.depth - a.depth);
+
   return projectedFaces;
 };
