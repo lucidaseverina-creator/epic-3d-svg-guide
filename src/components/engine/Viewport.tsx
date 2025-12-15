@@ -1,6 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { ProjectedFace, Vector3, Vector2, ToolType, TransformDelta } from '@/types/engine';
-import { rotateEuler, project } from '@/lib/math';
+import { rotateEuler, project, add } from '@/lib/math';
+import { CameraGizmo } from '@/components/engine/CameraGizmo';
 
 interface ViewportProps {
   projectedFaces: ProjectedFace[];
@@ -11,6 +12,7 @@ interface ViewportProps {
   cameraFov: number;
   gridVisible?: boolean;
   renderMode?: 'solid' | 'wireframe' | 'normals' | 'xray';
+  onViewportResize?: (size: { width: number; height: number }) => void;
   onObjectClick?: (objectId: string | null) => void;
   onCameraRotate?: (rotation: Vector3) => void;
   onCameraPan?: (offset: Vector3) => void;
@@ -23,6 +25,7 @@ const generateGridFloor = (
   size: number,
   divisions: number,
   cameraRotation: Vector3,
+  cameraPosition: Vector3,
   width: number,
   height: number,
   fov: number,
@@ -39,12 +42,16 @@ const generateGridFloor = (
     const opacity = isMajor ? 0.4 : 0.15;
 
     // Lines along X axis
-    const xStart: Vector3 = { x: -half, y: gridY, z: pos };
-    const xEnd: Vector3 = { x: half, y: gridY, z: pos };
-    
+    const xStartW: Vector3 = { x: -half, y: gridY, z: pos };
+    const xEndW: Vector3 = { x: half, y: gridY, z: pos };
+
+    // Apply camera pan (x/y)
+    const xStart: Vector3 = add(xStartW, { x: -cameraPosition.x, y: -cameraPosition.y, z: 0 });
+    const xEnd: Vector3 = add(xEndW, { x: -cameraPosition.x, y: -cameraPosition.y, z: 0 });
+
     const xStartRot = rotateEuler(xStart, cameraRotation);
     const xEndRot = rotateEuler(xEnd, cameraRotation);
-    
+
     const xStartProj = project(xStartRot, width, height, fov, cameraZ);
     const xEndProj = project(xEndRot, width, height, fov, cameraZ);
     
@@ -60,12 +67,15 @@ const generateGridFloor = (
     }
 
     // Lines along Z axis
-    const zStart: Vector3 = { x: pos, y: gridY, z: -half };
-    const zEnd: Vector3 = { x: pos, y: gridY, z: half };
-    
+    const zStartW: Vector3 = { x: pos, y: gridY, z: -half };
+    const zEndW: Vector3 = { x: pos, y: gridY, z: half };
+
+    const zStart: Vector3 = add(zStartW, { x: -cameraPosition.x, y: -cameraPosition.y, z: 0 });
+    const zEnd: Vector3 = add(zEndW, { x: -cameraPosition.x, y: -cameraPosition.y, z: 0 });
+
     const zStartRot = rotateEuler(zStart, cameraRotation);
     const zEndRot = rotateEuler(zEnd, cameraRotation);
-    
+
     const zStartProj = project(zStartRot, width, height, fov, cameraZ);
     const zEndProj = project(zEndRot, width, height, fov, cameraZ);
     
@@ -92,6 +102,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   cameraFov,
   gridVisible = true,
   renderMode = 'solid',
+  onViewportResize,
   onObjectClick,
   onCameraRotate,
   onCameraPan,
@@ -113,23 +124,25 @@ export const Viewport: React.FC<ViewportProps> = ({
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          setViewportSize({ width: rect.width, height: rect.height });
+          const next = { width: rect.width, height: rect.height };
+          setViewportSize(next);
+          onViewportResize?.(next);
         }
       }
     };
-    
+
     updateSize();
     window.addEventListener('resize', updateSize);
     const resizeObserver = new ResizeObserver(updateSize);
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
     }
-    
+
     return () => {
       window.removeEventListener('resize', updateSize);
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [onViewportResize]);
   
   // Generate 3D grid floor
   const gridFloor = useMemo(() => {
@@ -138,12 +151,13 @@ export const Viewport: React.FC<ViewportProps> = ({
       600, // size
       24,  // divisions
       cameraRotation,
+      cameraPosition,
       viewportSize.width,
       viewportSize.height,
       cameraFov,
       cameraPosition.z
     );
-  }, [gridVisible, cameraRotation, viewportSize, cameraFov, cameraPosition.z]);
+  }, [gridVisible, cameraRotation, cameraPosition, viewportSize, cameraFov]);
   
   // Get cursor for active tool
   const getCursor = useCallback(() => {
@@ -438,6 +452,23 @@ export const Viewport: React.FC<ViewportProps> = ({
         <div>{viewportSize.width} × {viewportSize.height}</div>
         <div>Objects: {objectCount}</div>
         <div>Faces: {projectedFaces.length}</div>
+      </div>
+
+      <div className="absolute top-3 right-3 z-20">
+        <CameraGizmo
+          rotation={cameraRotation}
+          onPreset={(preset) => {
+            if (!onCameraRotate) return;
+            const map: Record<typeof preset, Vector3> = {
+              front: { x: 0, y: 0, z: 0 },
+              back: { x: 0, y: Math.PI, z: 0 },
+              left: { x: 0, y: -Math.PI / 2, z: 0 },
+              right: { x: 0, y: Math.PI / 2, z: 0 },
+              top: { x: -Math.PI / 2 + 0.1, y: 0, z: 0 },
+            };
+            onCameraRotate(map[preset]);
+          }}
+        />
       </div>
       
       {/* Controls hint */}

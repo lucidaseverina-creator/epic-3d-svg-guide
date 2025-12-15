@@ -59,13 +59,10 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   
   // Render config
   const config = useMemo(() => getDefaultConfig(), []);
-  
-  // Use full window size for rendering
-  const [viewportSize, setViewportSize] = useState({ 
-    width: typeof window !== 'undefined' ? window.innerWidth : 1920, 
-    height: typeof window !== 'undefined' ? window.innerHeight : 1080 
-  });
-  
+
+  // Actual viewport size (reported by <Viewport />)
+  const [viewportSize, setViewportSize] = useState({ width: 1200, height: 700 });
+
   // Render the scene
   const projectedFaces = useMemo(() => {
     return renderScene(scene, config, viewportSize.width, viewportSize.height);
@@ -173,6 +170,7 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
               cameraFov={scene.camera.fov}
               gridVisible={scene.gridVisible}
               renderMode={renderMode}
+              onViewportResize={setViewportSize}
               onObjectClick={selectObject}
               onCameraRotate={rotateCamera}
               onCameraPan={panCamera}
