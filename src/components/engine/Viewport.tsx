@@ -1,12 +1,16 @@
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { ProjectedFace, Vector3, ToolType, TransformDelta } from '@/types/engine';
+import { ProjectedFace, Vector3, Vector2, ToolType, TransformDelta } from '@/types/engine';
+import { rotateEuler, project } from '@/lib/math';
 
 interface ViewportProps {
   projectedFaces: ProjectedFace[];
   selectedObjectId?: string | null;
   activeTool?: ToolType;
   cameraRotation: Vector3;
+  cameraPosition: Vector3;
+  cameraFov: number;
   gridVisible?: boolean;
+  renderMode?: 'solid' | 'wireframe' | 'normals' | 'xray';
   onObjectClick?: (objectId: string | null) => void;
   onCameraRotate?: (rotation: Vector3) => void;
   onCameraPan?: (offset: Vector3) => void;
@@ -14,12 +18,80 @@ interface ViewportProps {
   onObjectTransform?: (objectId: string, transform: TransformDelta) => void;
 }
 
+// Generate 3D grid floor lines
+const generateGridFloor = (
+  size: number,
+  divisions: number,
+  cameraRotation: Vector3,
+  width: number,
+  height: number,
+  fov: number,
+  cameraZ: number
+): { lines: { x1: number; y1: number; x2: number; y2: number; opacity: number }[] } => {
+  const lines: { x1: number; y1: number; x2: number; y2: number; opacity: number }[] = [];
+  const step = size / divisions;
+  const half = size / 2;
+  const gridY = -80; // Grid floor Y position
+
+  for (let i = 0; i <= divisions; i++) {
+    const pos = -half + i * step;
+    const isMajor = i % 4 === 0;
+    const opacity = isMajor ? 0.4 : 0.15;
+
+    // Lines along X axis
+    const xStart: Vector3 = { x: -half, y: gridY, z: pos };
+    const xEnd: Vector3 = { x: half, y: gridY, z: pos };
+    
+    const xStartRot = rotateEuler(xStart, cameraRotation);
+    const xEndRot = rotateEuler(xEnd, cameraRotation);
+    
+    const xStartProj = project(xStartRot, width, height, fov, cameraZ);
+    const xEndProj = project(xEndRot, width, height, fov, cameraZ);
+    
+    // Only add if both points are in front of camera
+    if (xStartRot.z + cameraZ > 50 && xEndRot.z + cameraZ > 50) {
+      lines.push({
+        x1: xStartProj.x,
+        y1: xStartProj.y,
+        x2: xEndProj.x,
+        y2: xEndProj.y,
+        opacity,
+      });
+    }
+
+    // Lines along Z axis
+    const zStart: Vector3 = { x: pos, y: gridY, z: -half };
+    const zEnd: Vector3 = { x: pos, y: gridY, z: half };
+    
+    const zStartRot = rotateEuler(zStart, cameraRotation);
+    const zEndRot = rotateEuler(zEnd, cameraRotation);
+    
+    const zStartProj = project(zStartRot, width, height, fov, cameraZ);
+    const zEndProj = project(zEndRot, width, height, fov, cameraZ);
+    
+    if (zStartRot.z + cameraZ > 50 && zEndRot.z + cameraZ > 50) {
+      lines.push({
+        x1: zStartProj.x,
+        y1: zStartProj.y,
+        x2: zEndProj.x,
+        y2: zEndProj.y,
+        opacity,
+      });
+    }
+  }
+
+  return { lines };
+};
+
 export const Viewport: React.FC<ViewportProps> = ({
   projectedFaces,
   selectedObjectId,
   activeTool = 'select',
   cameraRotation,
+  cameraPosition,
+  cameraFov,
   gridVisible = true,
+  renderMode = 'solid',
   onObjectClick,
   onCameraRotate,
   onCameraPan,
@@ -29,13 +101,13 @@ export const Viewport: React.FC<ViewportProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   
-  const [viewportSize, setViewportSize] = useState({ width: 800, height: 600 });
+  const [viewportSize, setViewportSize] = useState({ width: 1920, height: 1080 });
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [isTransforming, setIsTransforming] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   
-  // Resize observer
+  // Resize observer - make viewport fill container
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
@@ -47,23 +119,42 @@ export const Viewport: React.FC<ViewportProps> = ({
     };
     
     updateSize();
+    window.addEventListener('resize', updateSize);
     const resizeObserver = new ResizeObserver(updateSize);
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
     }
     
-    return () => resizeObserver.disconnect();
+    return () => {
+      window.removeEventListener('resize', updateSize);
+      resizeObserver.disconnect();
+    };
   }, []);
+  
+  // Generate 3D grid floor
+  const gridFloor = useMemo(() => {
+    if (!gridVisible) return { lines: [] };
+    return generateGridFloor(
+      600, // size
+      24,  // divisions
+      cameraRotation,
+      viewportSize.width,
+      viewportSize.height,
+      cameraFov,
+      cameraPosition.z
+    );
+  }, [gridVisible, cameraRotation, viewportSize, cameraFov, cameraPosition.z]);
   
   // Get cursor for active tool
   const getCursor = useCallback(() => {
-    if (isDragging || isPanning) return 'grabbing';
+    if (isDragging) return 'grabbing';
+    if (isPanning) return 'move';
     if (isTransforming) {
       if (activeTool === 'move') return 'move';
       if (activeTool === 'rotate') return 'crosshair';
       if (activeTool === 'scale') return 'nwse-resize';
     }
-    return 'default';
+    return 'grab';
   }, [isDragging, isPanning, isTransforming, activeTool]);
   
   // Mouse handlers
@@ -71,13 +162,13 @@ export const Viewport: React.FC<ViewportProps> = ({
     e.preventDefault();
     setLastMousePos({ x: e.clientX, y: e.clientY });
     
-    if (e.button === 0) { // Left click
+    if (e.button === 0) { // Left click - orbit
       if (activeTool !== 'select' && selectedObjectId) {
         setIsTransforming(true);
       } else {
         setIsDragging(true);
       }
-    } else if (e.button === 2) { // Right click
+    } else if (e.button === 1 || e.button === 2) { // Middle or Right click - pan
       setIsPanning(true);
     }
   }, [activeTool, selectedObjectId]);
@@ -111,7 +202,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       newRotation.x = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, newRotation.x));
       onCameraRotate(newRotation);
     } else if (isPanning && onCameraPan) {
-      onCameraPan({ x: -dx * 2, y: dy * 2, z: 0 });
+      onCameraPan({ x: -dx * 0.5, y: dy * 0.5, z: 0 });
     }
     
     setLastMousePos({ x: e.clientX, y: e.clientY });
@@ -130,7 +221,8 @@ export const Viewport: React.FC<ViewportProps> = ({
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     if (onCameraZoom) {
-      const delta = e.deltaY > 0 ? 20 : -20;
+      // Smooth zoom with scroll wheel
+      const delta = e.deltaY * 0.5;
       onCameraZoom(delta);
     }
   }, [onCameraZoom]);
@@ -181,21 +273,13 @@ export const Viewport: React.FC<ViewportProps> = ({
   return (
     <div
       ref={containerRef}
-      className="w-full h-full relative overflow-hidden bg-background"
+      className="absolute inset-0 overflow-hidden bg-background"
       onContextMenu={handleContextMenu}
     >
-      {/* Grid background */}
-      {gridVisible && (
-        <div
-          className="absolute inset-0 viewport-grid opacity-30"
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
-      
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewportSize.width} ${viewportSize.height}`}
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid slice"
         className="w-full h-full"
         style={{ cursor: getCursor() }}
         onMouseDown={handleMouseDown}
@@ -225,30 +309,91 @@ export const Viewport: React.FC<ViewportProps> = ({
             </feMerge>
           </filter>
           
-          {/* Drop shadow for depth */}
-          <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="2" dy="2" stdDeviation="3" floodOpacity="0.3" />
+          {/* Grid glow */}
+          <filter id="gridGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
           </filter>
         </defs>
+        
+        {/* 3D Grid Floor */}
+        {gridVisible && (
+          <g className="grid-floor">
+            {gridFloor.lines.map((line, i) => (
+              <line
+                key={`grid-${i}`}
+                x1={line.x1}
+                y1={line.y1}
+                x2={line.x2}
+                y2={line.y2}
+                stroke="hsl(var(--primary))"
+                strokeWidth={1}
+                opacity={line.opacity}
+                filter="url(#gridGlow)"
+              />
+            ))}
+          </g>
+        )}
         
         {/* Render faces in depth-sorted order (painter's algorithm) */}
         {projectedFaces.map((face, index) => {
           const pathData = generatePath(face);
           const objectId = face.objectId || 'unknown';
           
+          // Calculate face center for normal visualization
+          const centerX = face.projectedVerts.reduce((sum, v) => sum + v.x, 0) / face.projectedVerts.length;
+          const centerY = face.projectedVerts.reduce((sum, v) => sum + v.y, 0) / face.projectedVerts.length;
+          
           return (
             <g key={index}>
               {/* Main face */}
-              <path
-                d={pathData}
-                fill={face.color}
-                stroke="rgba(0,0,0,0.15)"
-                strokeWidth={0.5}
-                onClick={(e) => handleFaceClick(e, objectId)}
-                style={{ 
-                  cursor: activeTool === 'select' ? 'pointer' : getCursor(),
-                }}
-              />
+              {renderMode === 'solid' && (
+                <path
+                  d={pathData}
+                  fill={face.color}
+                  stroke="rgba(0,0,0,0.1)"
+                  strokeWidth={0.5}
+                  onClick={(e) => handleFaceClick(e, objectId)}
+                  style={{ 
+                    cursor: activeTool === 'select' ? 'pointer' : getCursor(),
+                  }}
+                />
+              )}
+              
+              {/* Wireframe mode */}
+              {renderMode === 'wireframe' && (
+                <path
+                  d={pathData}
+                  fill="none"
+                  stroke="hsl(var(--primary))"
+                  strokeWidth={1}
+                  opacity={0.8}
+                  onClick={(e) => handleFaceClick(e, objectId)}
+                />
+              )}
+              
+              {/* Normals mode - show wireframe + normal indicators */}
+              {renderMode === 'normals' && (
+                <>
+                  <path
+                    d={pathData}
+                    fill="rgba(0, 255, 255, 0.1)"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={0.5}
+                    opacity={0.6}
+                  />
+                  {/* Normal indicator line (pointing toward camera = green) */}
+                  <circle
+                    cx={centerX}
+                    cy={centerY}
+                    r={2}
+                    fill="hsl(120, 100%, 50%)"
+                  />
+                </>
+              )}
               
               {/* Selection highlight */}
               {face.isSelected && (
@@ -270,18 +415,18 @@ export const Viewport: React.FC<ViewportProps> = ({
         {/* Center axis indicator */}
         <g opacity={0.6}>
           <line
-            x1={viewportSize.width / 2 - 30}
+            x1={viewportSize.width / 2 - 40}
             y1={viewportSize.height / 2}
-            x2={viewportSize.width / 2 + 30}
+            x2={viewportSize.width / 2 + 40}
             y2={viewportSize.height / 2}
             stroke="hsl(var(--axis-x))"
             strokeWidth={2}
           />
           <line
             x1={viewportSize.width / 2}
-            y1={viewportSize.height / 2 - 30}
+            y1={viewportSize.height / 2 - 40}
             x2={viewportSize.width / 2}
-            y2={viewportSize.height / 2 + 30}
+            y2={viewportSize.height / 2 + 40}
             stroke="hsl(var(--axis-y))"
             strokeWidth={2}
           />
@@ -293,6 +438,11 @@ export const Viewport: React.FC<ViewportProps> = ({
         <div>{viewportSize.width} × {viewportSize.height}</div>
         <div>Objects: {objectCount}</div>
         <div>Faces: {projectedFaces.length}</div>
+      </div>
+      
+      {/* Controls hint */}
+      <div className="absolute bottom-3 left-3 text-xs text-muted-foreground/50 font-mono">
+        <div>Left drag: Orbit • Right drag: Pan • Scroll: Zoom</div>
       </div>
     </div>
   );

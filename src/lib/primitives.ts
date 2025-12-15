@@ -147,7 +147,7 @@ export const generateCylinder = (radius: number = 30, height: number = 80, segme
   return faces;
 };
 
-// Generate torus faces
+// Generate torus faces (fixed winding for correct outward normals)
 export const generateTorus = (majorRadius: number = 40, minorRadius: number = 15, segments: number = 16): Face[] => {
   const faces: Face[] = [];
   
@@ -165,12 +165,13 @@ export const generateTorus = (majorRadius: number = 40, minorRadius: number = 15
         z: (majorRadius + minorRadius * Math.cos(phi)) * Math.sin(theta),
       });
       
+      // Reversed winding order for correct outward-facing normals
       faces.push({
         verts: [
-          getVertex(theta1, phi1),
-          getVertex(theta2, phi1),
-          getVertex(theta2, phi2),
           getVertex(theta1, phi2),
+          getVertex(theta2, phi2),
+          getVertex(theta2, phi1),
+          getVertex(theta1, phi1),
         ],
         color: `hsl(${(i / segments) * 40 + 180}, 100%, ${45 + (j / segments) * 15}%)`,
       });

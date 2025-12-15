@@ -126,20 +126,14 @@ export const renderScene = (
       const center = calculateCenter(rotatedVerts);
 
       // Calculate normal for lighting and backface culling
-      let normal = calculateNormal(rotatedVerts);
+      const normal = calculateNormal(rotatedVerts);
 
-      // Ensure normals point "outward" from the object's center (robust vs. inconsistent vertex winding)
-      const objCenterCamera = rotateEuler(obj.position, scene.camera.rotation);
-      const outward = normalize(subtract(center, objCenterCamera));
-      if (dot(normal, outward) < 0) {
-        normal = multiply(normal, -1);
-      }
+      // Backface culling: camera is at -Z looking toward +Z
+      // Faces with normals pointing toward +Z (away from camera) should be culled
+      // Faces with normals pointing toward -Z (toward camera) are visible
+      if (normal.z > 0) continue;
 
-      // Backface culling: camera is effectively at z=-cameraZ looking toward +Z
-      // so faces with normals pointing toward +Z are facing away from the camera.
-      if (normal.z > 0.0001) continue;
-
-      // Calculate lighting
+      // Calculate lighting (use absolute normal for consistent lighting)
       const lightIntensity = calculateLighting(normal, scene.lights, scene.camera.rotation);
 
       // Use object's material color instead of face color
