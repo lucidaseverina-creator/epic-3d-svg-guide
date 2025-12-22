@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic 2D Oriented Particle Fluid Simulation</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white; font-family: Arial, sans-serif;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">800 particles • Realistic viscosity + pressure • Oriented directors • Click/drag to stir</div>
+    <canvas id="glCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const gl = canvas.getContext('webgl');
+        if (!gl) { alert('WebGL not supported'); }
+
+        // Simple SPH-like kernel helpers
+        const poly6 = (r, h) => {
+            if (r >= h) return 0;
+            const x = 1 - (r * r) / (h * h);
+            return 315 / (64 * Math.PI * h**9) * x*x*x;
+        };
+        const spikyGradMag = (r, h) => {
+            if (r >= h || r === 0) return 0;
+            const x = 1 - r / h;
+            return -45 / (Math.PI * h**6) * x * x;
+        };
+
+        class Particle {
+            constructor(x, y) {
+                this.pos = [x, y];
+                this.vel = [0, 0];
+                this.director = [Math.random() * 2 - 1, Math.random() * 2 - 1];
+                this.director = this.normalize(this.director);
+                this.spin = (Math.random() - 0.5) * 4;
+                this.history = [[x, y]];
+                this.maxHistory = 8;
+                this.strength = 0.0;
+            }
+
+            normalize(v) {
+                const len = Math.hypot(v[0], v[1]);
+                return len > 0 ? [v[0]/len, v[1]/len] : [0, 1];
+            }
+        }
+
+        const WORLD_W = 12;
+        const WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+        const NUM_PARTICLES = 800;
+        const particles = [];
+        const REST_DENSITY = 1000;
+        const H = 0.4; // smoothing radius
+        const K = 5000; // pressure stiffness
+        const VISC = 8.0; // viscosity coefficient
+        const GRAVITY = +0.3; // upward gravity as requested
+        const DAMPING = 0.15;
+        const MAX_SPEED = 8;
+
+        // Initialize particles in a dense grid at bottom
+        const cols = Math.ceil(Math.sqrt(NUM_PARTICLES * WORLD_W / WORLD_H));
+        const rows = Math.ceil(NUM_PARTICLES / cols);
+        const spacing = H * 0.8;
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const row = i % cols;
+            const col = Math.floor(i / cols);
+            const x = 1 + row * spacing + (Math.random() - 0.5) * 0.1;
+            const y = 1 + col * spacing + (Math.random() - 0.5) * 0.1;
+            if (y < WORLD_H - 2) particles.push(new Particle(x, WORLD_W * 0.5 + (x - WORLD_W * 0.5) * 0.1, y));
+        }
+
+        // Mouse interaction
+        let mouseDown = false;
+        let mousePos = [0, 0];
+        let prevMouse = [0, 0];
+        canvas.addEventListener('mousedown', e => { mouseDown = true; });
+        canvas.addEventListener('mouseup', () => { mouseDown = false; });
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            prevMouse = mousePos;
+            mousePos = [
+                (e.clientX - rect.left) / canvas.width * WORLD_W,
+                WORLD_H - (e.clientY - rect.top) / canvas.height * WORLD_H
+            ];
+        });
+
+        // Shaders for thick oriented lines
+        const vsSource = `
+            attribute vec2 a_position;
+            uniform vec2 u_resolution;
+            void main() {
+                vec2 clipSpace = (a_position / u_resolution) * 2.0 - 1.0;
+                gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+                gl_PointSize = 1.0;
+            }
+        `;
+
+        const fsSource = `
+            precision mediump float;
+            uniform vec4 u_color;
+            void main() {
+                vec2 coord = gl_PointCoord - vec2(0.5);
+                if (length(coord) > 0.5) discard;
+                gl_FragColor = u_color;
+            }
+        `;
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+
+        const posLoc = gl.getAttribLocation(program, 'a_position');
+        const resLoc = gl.getUniformLocation(program, 'u_resolution');
+        const colorLoc = gl.getUniformLocation(program, 'u_color');
+
+        gl.enableVertexAttribArray(posLoc);
+        const buffer = gl.createBuffer();
+
+        function worldToScreen(p) {
+            return [p[0] / WORLD_W * canvas.width, canvas.height - p[1] / WORLD_H * canvas.height];
+        }
+
+        let lastTime = 0;
+        function animate(time) {
+            if (!lastTime) lastTime = time;
+            const dt = Math.min((time - lastTime) / 1000, 0.05);
+            lastTime = time;
+
+            // Apply gravity (upward)
+            for (const p of particles) {
+                p.vel[1] += GRAVITY * dt;
+            }
+
+            // Mouse force
+            if (mouseDown) {
+                const forceStrength = 30;
+                const mouseVel = [(mousePos[0] - prevMouse[0]) / dt, (mousePos[1] - prevMouse[1]) / dt];
+                for (const p of particles) {
+                    const dx = p.pos[0] - mousePos[0];
+                    const dy = p.pos[1] - mousePos[1];
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < 1.5) {
+                        p.vel[0] += mouseVel[0] * forceStrength * (1 - dist / 1.5) * dt;
+                        p.vel[1] += mouseVel[1] * forceStrength * (1 - dist / 1.5) * dt;
+                    }
+                }
+            }
+
+            // SPH pressure + viscosity
+            const densities = new Array(particles.length).fill(0);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H) {
+                        const w = poly6(r, H);
+                        densities[i] += w;
+                        densities[j] += w;
+                    }
+                }
+            }
+
+            const forces = particles.map(() => [0, 0]);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                const pressure_i = K * (densities[i] - REST_DENSITY);
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H && r > 0) {
+                        const dir = [dx / r, dy / r];
+                        const pressure_j = K * (densities[j] - REST_DENSITY);
+                        const pressureForce = spikyGradMag(r, H) * (pressure_i + pressure_j) / (2 * densities[i] * densities[j] || 1);
+                        forces[i][0] -= pressureForce * dir[0];
+                        forces[i][1] -= pressureForce * dir[1];
+                        forces[j][0] += pressureForce * dir[0];
+                        forces[j][1] += pressureForce * dir[1];
+
+                        // Viscosity
+                        const relVel = [pj.vel[0] - pi.vel[0], pj.vel[1] - pi.vel[1]];
+                        const viscLaplacian = poly6(r, H);
+                        const viscForce = VISC * viscLaplacian / (densities[i] + densities[j] || 1);
+                        forces[i][0] += viscForce * relVel[0];
+                        forces[i][1] += viscForce * relVel[1];
+                        forces[j][0] -= viscForce * relVel[0];
+                        forces[j][1] -= viscForce * relVel[1];
+
+                        // Oriented friction/torque
+                        const align = pi.director[0] * dir[0] + pi.director[1] * dir[1];
+                        const torque = 2.0 * (1 - Math.abs(align)) * Math.sign(pi.spin - pj.spin);
+                        pi.spin += torque * dt * 0.5;
+                        pj.spin -= torque * dt * 0.5;
+                        pi.strength = Math.min(1, pi.strength + Math.abs(torque) * dt * 0.02);
+                        pj.strength = Math.min(1, pj.strength + Math.abs(torque) * dt * 0.02);
+                    }
+                }
+            }
+
+            // Integrate
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                p.vel[0] += forces[i][0] * dt;
+                p.vel[1] += forces[i][1] * dt;
+                const speed = Math.hypot(p.vel[0], p.vel[1]);
+                if (speed > MAX_SPEED) {
+                    p.vel[0] = p.vel[0] / speed * MAX_SPEED;
+                    p.vel[1] = p.vel[1] / speed * MAX_SPEED;
+                }
+
+                p.pos[0] += p.vel[0] * dt;
+                p.pos[1] += p.vel[1] * dt;
+
+                // Director rotation + history damping
+                const angle = p.spin * (1 - p.strength) * dt;
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const newDir = [
+                    c * p.director[0] - s * p.director[1],
+                    s * p.director[0] + c * p.director[1]
+                ];
+                p.director = p.normalize(newDir);
+
+                p.history.push([p.pos[0], p.pos[1]]);
+                if (p.history.length > p.maxHistory) p.history.shift();
+                if (p.history.length > 2) {
+                    const avgVel = [(p.pos[0] - p.history[0][0]) / (dt * (p.history.length-1)),
+                                    (p.pos[1] - p.history[0][1]) / (dt * (p.history.length-1))];
+                    const avgDir = p.normalize(avgVel);
+                    p.director = p.normalize([
+                        (1 - DAMPING) * p.director[0] + DAMPING * avgDir[0],
+                        (1 - DAMPING) * p.director[1] + DAMPING * avgDir[1]
+                    ]);
+                }
+
+                // Boundaries
+                if (p.pos[0] < 0.3) { p.pos[0] = 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[0] > WORLD_W - 0.3) { p.pos[0] = WORLD_W - 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[1] < 0.3) { p.pos[1] = 0.3; p.vel[1] *= -0.5; }
+                if (p.pos[1] > WORLD_H - 0.3) { p.pos[1] = WORLD_H - 0.3; p.vel[1] *= -0.5; }
+            }
+
+            // Render as oriented thick segments
+            const lineLen = 0.08;
+            const verts = new Float32Array(particles.length * 4);
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const base = [p.pos[0], p.pos[1]];
+                const tip = [p.pos[0] + p.director[0] * lineLen, p.pos[1] + p.director[1] * lineLen];
+                const bScreen = worldToScreen(base);
+                const tScreen = worldToScreen(tip);
+                verts[i*4]     = bScreen[0];
+                verts[i*4 + 1] = bScreen[1];
+                verts[i*4 + 2] = tScreen[0];
+                verts[i*4 + 3] = tScreen[1];
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+            gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+            gl.uniform2f(resLoc, canvas.width, canvas.height);
+            gl.uniform4f(colorLoc, 0.3, 0.7, 1.0, 1.0);
+
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.drawArrays(gl.LINES, 0, particles.length * 2);
+
+            requestAnimationFrame(animate);
+        }
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic 2D Oriented Particle Fluid Simulation</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white; font-family: Arial, sans-serif;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">800 particles • Realistic viscosity + pressure • Oriented directors • Click/drag to stir</div>
+    <canvas id="glCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const gl = canvas.getContext('webgl');
+        if (!gl) { alert('WebGL not supported'); }
+        // Simple SPH-like kernel helpers
+        const poly6 = (r, h) => {
+            if (r >= h) return 0;
+            const x = 1 - (r * r) / (h * h);
+            return 315 / (64 * Math.PI * h**9) * x*x*x;
+        };
+        const spikyGradMag = (r, h) => {
+            if (r >= h || r === 0) return 0;
+            const x = 1 - r / h;
+            return -45 / (Math.PI * h**6) * x * x;
+        };
+        class Particle {
+            constructor(x, y) {
+                this.pos = [x, y];
+                this.vel = [0, 0];
+                this.director = [Math.random() * 2 - 1, Math.random() * 2 - 1];
+                this.director = this.normalize(this.director);
+                this.spin = (Math.random() - 0.5) * 4;
+                this.history = [[x, y]];
+                this.maxHistory = 10; // Increased for smoother damping
+                this.strength = 0.0;
+            }
+            normalize(v) {
+                const len = Math.hypot(v[0], v[1]);
+                return len > 0 ? [v[0]/len, v[1]/len] : [0, 1];
+            }
+        }
+        const WORLD_W = 12;
+        let WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+        const NUM_PARTICLES = 800;
+        const particles = [];
+        const REST_DENSITY = 1000;
+        const H = 0.4; // smoothing radius
+        const K = 5000; // pressure stiffness
+        const VISC = 10.0; // Increased viscosity for thicker flows
+        const GRAVITY = +0.3; // upward gravity as requested
+        const DAMPING = 0.15;
+        const MAX_SPEED = 8;
+        // Initialize particles in a dense grid at bottom, centered
+        const cols = Math.ceil(Math.sqrt(NUM_PARTICLES * WORLD_W / WORLD_H));
+        const rows = Math.ceil(NUM_PARTICLES / cols);
+        const spacing = H * 0.8;
+        const offsetX = (WORLD_W - cols * spacing) / 2 + 0.5; // Center the grid
+        const offsetY = 0.5;
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = offsetX + col * spacing + (Math.random() - 0.5) * 0.1;
+            const y = offsetY + row * spacing + (Math.random() - 0.5) * 0.1;
+            if (y < WORLD_H - 2) particles.push(new Particle(x, y));
+        }
+        // Mouse interaction
+        let mouseDown = false;
+        let mousePos = [0, 0];
+        let prevMouse = [0, 0];
+        canvas.addEventListener('mousedown', e => { mouseDown = true; });
+        canvas.addEventListener('mouseup', () => { mouseDown = false; });
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            prevMouse = mousePos;
+            mousePos = [
+                (e.clientX - rect.left) / canvas.width * WORLD_W,
+                WORLD_H - (e.clientY - rect.top) / canvas.height * WORLD_H
+            ];
+        });
+        // Shaders for thick oriented lines (points for simplicity, but using lines)
+        const vsSource = `
+            attribute vec2 a_position;
+            uniform vec2 u_resolution;
+            void main() {
+                vec2 clipSpace = (a_position / u_resolution) * 2.0 - 1.0;
+                gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+                gl_PointSize = 1.0;
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            uniform vec4 u_color;
+            void main() {
+                gl_FragColor = u_color;
+            }
+        `;
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+        const posLoc = gl.getAttribLocation(program, 'a_position');
+        const resLoc = gl.getUniformLocation(program, 'u_resolution');
+        const colorLoc = gl.getUniformLocation(program, 'u_color');
+        gl.enableVertexAttribArray(posLoc);
+        const buffer = gl.createBuffer();
+        function worldToScreen(p) {
+            return [p[0] / WORLD_W * canvas.width, canvas.height - p[1] / WORLD_H * canvas.height];
+        }
+        let lastTime = 0;
+        function animate(time) {
+            if (!lastTime) lastTime = time;
+            const dt = Math.min((time - lastTime) / 1000, 0.05);
+            lastTime = time;
+            // Apply gravity (upward)
+            for (const p of particles) {
+                p.vel[1] += GRAVITY * dt;
+            }
+            // Mouse force
+            if (mouseDown) {
+                const forceStrength = 30;
+                const mouseVel = [(mousePos[0] - prevMouse[0]) / dt, (mousePos[1] - prevMouse[1]) / dt];
+                for (const p of particles) {
+                    const dx = p.pos[0] - mousePos[0];
+                    const dy = p.pos[1] - mousePos[1];
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < 1.5) {
+                        p.vel[0] += mouseVel[0] * forceStrength * (1 - dist / 1.5) * dt;
+                        p.vel[1] += mouseVel[1] * forceStrength * (1 - dist / 1.5) * dt;
+                    }
+                }
+            }
+            // SPH pressure + viscosity
+            const densities = new Array(particles.length).fill(0);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H) {
+                        const w = poly6(r, H);
+                        densities[i] += w;
+                        densities[j] += w;
+                    }
+                }
+            }
+            const forces = particles.map(() => [0, 0]);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                const pressure_i = K * (densities[i] - REST_DENSITY);
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H && r > 0) {
+                        const dir = [dx / r, dy / r];
+                        const pressure_j = K * (densities[j] - REST_DENSITY);
+                        const pressureForce = spikyGradMag(r, H) * (pressure_i + pressure_j) / (2 * densities[i] * densities[j] || 1);
+                        forces[i][0] -= pressureForce * dir[0];
+                        forces[i][1] -= pressureForce * dir[1];
+                        forces[j][0] += pressureForce * dir[0];
+                        forces[j][1] += pressureForce * dir[1];
+                        // Viscosity
+                        const relVel = [pj.vel[0] - pi.vel[0], pj.vel[1] - pi.vel[1]];
+                        const viscLaplacian = poly6(r, H);
+                        const viscForce = VISC * viscLaplacian / (densities[i] + densities[j] || 1);
+                        forces[i][0] += viscForce * relVel[0];
+                        forces[i][1] += viscForce * relVel[1];
+                        forces[j][0] -= viscForce * relVel[0];
+                        forces[j][1] -= viscForce * relVel[1];
+                        // Oriented friction/torque
+                        const align = pi.director[0] * dir[0] + pi.director[1] * dir[1];
+                        const torque = 2.0 * (1 - Math.abs(align)) * Math.sign(pi.spin - pj.spin);
+                        pi.spin += torque * dt * 0.5;
+                        pj.spin -= torque * dt * 0.5;
+                        pi.strength = Math.min(1, pi.strength + Math.abs(torque) * dt * 0.02);
+                        pj.strength = Math.min(1, pj.strength + Math.abs(torque) * dt * 0.02);
+                    }
+                }
+            }
+            // Integrate
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                p.vel[0] += forces[i][0] * dt;
+                p.vel[1] += forces[i][1] * dt;
+                const speed = Math.hypot(p.vel[0], p.vel[1]);
+                if (speed > MAX_SPEED) {
+                    p.vel[0] = p.vel[0] / speed * MAX_SPEED;
+                    p.vel[1] = p.vel[1] / speed * MAX_SPEED;
+                }
+                p.pos[0] += p.vel[0] * dt;
+                p.pos[1] += p.vel[1] * dt;
+                // Director rotation + history damping + quantum noise
+                p.spin += (Math.random() - 0.5) * 0.5 * dt; // Subtle fluctuation
+                const angle = p.spin * (1 - p.strength) * dt;
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const newDir = [
+                    c * p.director[0] - s * p.director[1],
+                    s * p.director[0] + c * p.director[1]
+                ];
+                p.director = p.normalize(newDir);
+                p.history.push([p.pos[0], p.pos[1]]);
+                if (p.history.length > p.maxHistory) p.history.shift();
+                if (p.history.length > 2) {
+                    const avgVel = [(p.pos[0] - p.history[0][0]) / (dt * (p.history.length-1)),
+                                    (p.pos[1] - p.history[0][1]) / (dt * (p.history.length-1))];
+                    const avgDir = p.normalize(avgVel);
+                    p.director = p.normalize([
+                        (1 - DAMPING) * p.director[0] + DAMPING * avgDir[0],
+                        (1 - DAMPING) * p.director[1] + DAMPING * avgDir[1]
+                    ]);
+                }
+                // Boundaries
+                if (p.pos[0] < 0.3) { p.pos[0] = 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[0] > WORLD_W - 0.3) { p.pos[0] = WORLD_W - 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[1] < 0.3) { p.pos[1] = 0.3; p.vel[1] *= -0.5; }
+                if (p.pos[1] > WORLD_H - 0.3) { p.pos[1] = WORLD_H - 0.3; p.vel[1] *= -0.5; }
+            }
+            // Render as oriented thick segments with dynamic color
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.uniform2f(resLoc, canvas.width, canvas.height);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            const lineLen = 0.08;
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const base = [p.pos[0], p.pos[1]];
+                const tip = [p.pos[0] + p.director[0] * lineLen, p.pos[1] + p.director[1] * lineLen];
+                const bScreen = worldToScreen(base);
+                const tScreen = worldToScreen(tip);
+                const verts = new Float32Array([bScreen[0], bScreen[1], tScreen[0], tScreen[1]]);
+                gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                // Color by strength: blue-strong, green-weak
+                const r = 0.2 + (1 - p.strength) * 0.1;
+                const g = 0.5 + (1 - p.strength) * 0.2;
+                const b = 0.8 + p.strength * 0.2;
+                gl.uniform4f(colorLoc, r, g, b, 1.0);
+                gl.drawArrays(gl.LINES, 0, 2);
+            }
+            requestAnimationFrame(animate);
+        }
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic 2D Oriented Particle Fluid Simulation</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white; font-family: Arial, sans-serif;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">800 particles • Repulsive pressure + cohesive attraction • Oriented directors • Click/drag to stir</div>
+    <canvas id="glCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const gl = canvas.getContext('webgl');
+        if (!gl) { alert('WebGL not supported'); }
+        // Simple SPH-like kernel helpers
+        const poly6 = (r, h) => {
+            if (r >= h) return 0;
+            const x = 1 - (r * r) / (h * h);
+            return 315 / (64 * Math.PI * h**9) * x*x*x;
+        };
+        const spikyGradMag = (r, h) => {
+            if (r >= h || r === 0) return 0;
+            const x = 1 - r / h;
+            return -45 / (Math.PI * h**6) * x * x;
+        };
+        // New cohesion kernel (positive for attraction)
+        const cohesionKernel = (r, h) => {
+            if (r >= h || r === 0) return 0;
+            return 32 / (Math.PI * h**9) * (h - r)**3 * r**3;
+        };
+        class Particle {
+            constructor(x, y) {
+                this.pos = [x, y];
+                this.vel = [0, 0];
+                this.director = [Math.random() * 2 - 1, Math.random() * 2 - 1];
+                this.director = this.normalize(this.director);
+                this.spin = (Math.random() - 0.5) * 4;
+                this.history = [[x, y]];
+                this.maxHistory = 10;
+                this.strength = 0.0;
+            }
+            normalize(v) {
+                const len = Math.hypot(v[0], v[1]);
+                return len > 0 ? [v[0]/len, v[1]/len] : [0, 1];
+            }
+        }
+        const WORLD_W = 12;
+        let WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+        const NUM_PARTICLES = 800;
+        const particles = [];
+        const REST_DENSITY = 1000;
+        const H = 0.4;
+        const COH_H = 1.2 * H; // Longer range for cohesion
+        const K = 5000;
+        const COHESION_STRENGTH = 2000; // Tune for clump stickiness
+        const VISC = 8.0; // Balanced for flow
+        const GRAVITY = -0.3; // Downward for settling
+        const DAMPING = 0.15;
+        const MAX_SPEED = 8;
+        // Initialize particles
+        const cols = Math.ceil(Math.sqrt(NUM_PARTICLES * WORLD_W / WORLD_H));
+        const rows = Math.ceil(NUM_PARTICLES / cols);
+        const spacing = H * 0.8;
+        const offsetX = (WORLD_W - cols * spacing) / 2 + 0.5;
+        const offsetY = 0.5;
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = offsetX + col * spacing + (Math.random() - 0.5) * 0.1;
+            const y = offsetY + row * spacing + (Math.random() - 0.5) * 0.1;
+            if (y < WORLD_H - 2) particles.push(new Particle(x, y));
+        }
+        // Mouse interaction
+        let mouseDown = false;
+        let mousePos = [0, 0];
+        let prevMouse = [0, 0];
+        canvas.addEventListener('mousedown', e => { mouseDown = true; });
+        canvas.addEventListener('mouseup', () => { mouseDown = false; });
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            prevMouse = mousePos;
+            mousePos = [
+                (e.clientX - rect.left) / canvas.width * WORLD_W,
+                WORLD_H - (e.clientY - rect.top) / canvas.height * WORLD_H
+            ];
+        });
+        // Shaders (unchanged)
+        const vsSource = `
+            attribute vec2 a_position;
+            uniform vec2 u_resolution;
+            void main() {
+                vec2 clipSpace = (a_position / u_resolution) * 2.0 - 1.0;
+                gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+                gl_PointSize = 1.0;
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            uniform vec4 u_color;
+            void main() {
+                gl_FragColor = u_color;
+            }
+        `;
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+        const posLoc = gl.getAttribLocation(program, 'a_position');
+        const resLoc = gl.getUniformLocation(program, 'u_resolution');
+        const colorLoc = gl.getUniformLocation(program, 'u_color');
+        gl.enableVertexAttribArray(posLoc);
+        const buffer = gl.createBuffer();
+        function worldToScreen(p) {
+            return [p[0] / WORLD_W * canvas.width, canvas.height - p[1] / WORLD_H * canvas.height];
+        }
+        let lastTime = 0;
+        function animate(time) {
+            if (!lastTime) lastTime = time;
+            const dt = Math.min((time - lastTime) / 1000, 0.05);
+            lastTime = time;
+            // Gravity
+            for (const p of particles) {
+                p.vel[1] += GRAVITY * dt;
+            }
+            // Mouse force
+            if (mouseDown) {
+                const forceStrength = 30;
+                const mouseVel = [(mousePos[0] - prevMouse[0]) / dt, (mousePos[1] - prevMouse[1]) / dt];
+                for (const p of particles) {
+                    const dx = p.pos[0] - mousePos[0];
+                    const dy = p.pos[1] - mousePos[1];
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < 1.5) {
+                        p.vel[0] += mouseVel[0] * forceStrength * (1 - dist / 1.5) * dt;
+                        p.vel[1] += mouseVel[1] * forceStrength * (1 - dist / 1.5) * dt;
+                    }
+                }
+            }
+            // Densities
+            const densities = new Array(particles.length).fill(0);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H) {
+                        const w = poly6(r, H);
+                        densities[i] += w;
+                        densities[j] += w;
+                    }
+                }
+            }
+            // Forces
+            const forces = particles.map(() => [0, 0]);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                const pressure_i = K * (densities[i] - REST_DENSITY);
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H && r > 0) {
+                        const dir = [dx / r, dy / r];
+                        const pressure_j = K * (densities[j] - REST_DENSITY);
+                        const pressureForce = spikyGradMag(r, H) * (pressure_i + pressure_j) / (2 * (densities[i] * densities[j] || 1));
+                        // Fixed signs for repulsion
+                        forces[i][0] += pressureForce * dir[0];
+                        forces[i][1] += pressureForce * dir[1];
+                        forces[j][0] -= pressureForce * dir[0];
+                        forces[j][1] -= pressureForce * dir[1];
+                        // Viscosity (unchanged)
+                        const relVel = [pj.vel[0] - pi.vel[0], pj.vel[1] - pi.vel[1]];
+                        const viscLaplacian = poly6(r, H);
+                        const viscForce = VISC * viscLaplacian / (densities[i] + densities[j] || 1);
+                        forces[i][0] += viscForce * relVel[0];
+                        forces[i][1] += viscForce * relVel[1];
+                        forces[j][0] -= viscForce * relVel[0];
+                        forces[j][1] -= viscForce * relVel[1];
+                        // Oriented torque (unchanged)
+                        const align = pi.director[0] * dir[0] + pi.director[1] * dir[1];
+                        const torque = 2.0 * (1 - Math.abs(align)) * Math.sign(pi.spin - pj.spin);
+                        pi.spin += torque * dt * 0.5;
+                        pj.spin -= torque * dt * 0.5;
+                        pi.strength = Math.min(1, pi.strength + Math.abs(torque) * dt * 0.02);
+                        pj.strength = Math.min(1, pj.strength + Math.abs(torque) * dt * 0.02);
+                    }
+                    // New: Cohesion (attraction at longer range)
+                    if (r < COH_H && r > 0) {
+                        const dir = [dx / r, dy / r];
+                        const cohesionForce = COHESION_STRENGTH * cohesionKernel(r, COH_H);
+                        forces[i][0] += cohesionForce * dir[0];
+                        forces[i][1] += cohesionForce * dir[1];
+                        forces[j][0] -= cohesionForce * dir[0];
+                        forces[j][1] -= cohesionForce * dir[1];
+                    }
+                }
+            }
+            // Integrate (with enhanced noise)
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                p.vel[0] += forces[i][0] * dt;
+                p.vel[1] += forces[i][1] * dt;
+                const speed = Math.hypot(p.vel[0], p.vel[1]);
+                if (speed > MAX_SPEED) {
+                    p.vel[0] = p.vel[0] / speed * MAX_SPEED;
+                    p.vel[1] = p.vel[1] / speed * MAX_SPEED;
+                }
+                p.pos[0] += p.vel[0] * dt;
+                p.pos[1] += p.vel[1] * dt;
+                // Director + noise
+                p.spin += (Math.random() - 0.5) * 1.0 * dt; // Increased fluctuation
+                const angle = p.spin * (1 - p.strength) * dt;
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const newDir = [
+                    c * p.director[0] - s * p.director[1],
+                    s * p.director[0] + c * p.director[1]
+                ];
+                p.director = p.normalize(newDir);
+                p.history.push([p.pos[0], p.pos[1]]);
+                if (p.history.length > p.maxHistory) p.history.shift();
+                if (p.history.length > 2) {
+                    const avgVel = [(p.pos[0] - p.history[0][0]) / (dt * (p.history.length-1)),
+                                    (p.pos[1] - p.history[0][1]) / (dt * (p.history.length-1))];
+                    const avgDir = p.normalize(avgVel);
+                    p.director = p.normalize([
+                        (1 - DAMPING) * p.director[0] + DAMPING * avgDir[0],
+                        (1 - DAMPING) * p.director[1] + DAMPING * avgDir[1]
+                    ]);
+                }
+                // Boundaries
+                if (p.pos[0] < 0.3) { p.pos[0] = 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[0] > WORLD_W - 0.3) { p.pos[0] = WORLD_W - 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[1] < 0.3) { p.pos[1] = 0.3; p.vel[1] *= -0.5; }
+                if (p.pos[1] > WORLD_H - 0.3) { p.pos[1] = WORLD_H - 0.3; p.vel[1] *= -0.5; }
+            }
+            // Render (unchanged)
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.uniform2f(resLoc, canvas.width, canvas.height);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            const lineLen = 0.08;
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const base = [p.pos[0], p.pos[1]];
+                const tip = [p.pos[0] + p.director[0] * lineLen, p.pos[1] + p.director[1] * lineLen];
+                const bScreen = worldToScreen(base);
+                const tScreen = worldToScreen(tip);
+                const verts = new Float32Array([bScreen[0], bScreen[1], tScreen[0], tScreen[1]]);
+                gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                const r = 0.2 + (1 - p.strength) * 0.1;
+                const g = 0.5 + (1 - p.strength) * 0.2;
+                const b = 0.8 + p.strength * 0.2;
+                gl.uniform4f(colorLoc, r, g, b, 1.0);
+                gl.drawArrays(gl.LINES, 0, 2);
+            }
+            requestAnimationFrame(animate);
+        }
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU MLS-MPM Oriented Fluid (Grant Kot Style)</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #info { position: absolute; top: 10px; left: 10px; color: white; font-family: Arial; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div id="info">WebGPU MLS-MPM Fluid • ~150k particles • Upward gravity • Sinusoidal quantum field • Drag to stir</div>
+    <canvas id="canvas"></canvas>
+    <script type="module">
+        if (!navigator.gpu) {
+            alert("WebGPU not supported—try Chrome/Edge with flags or latest versions");
+        }
+
+        const canvas = document.getElementById('canvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+
+        const context = canvas.getContext('webgpu');
+        const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device, format: presentationFormat, alphaMode: 'premultiplied' });
+
+        // Simplified MLS-MPM compute shader (based on public implementations like WebGPU-Ocean)
+        const computeShaderCode = `
+            @group(0) @binding(0) var<storage, read_write> particlesPos : array<vec4<f32>>;
+            @group(0) @binding(1) var<storage, read_write> particlesVel : array<vec4<f32>>;
+            @group(0) @binding(2) var<storage, read_write> grid : array<atomic<i32>>; // Simplified grid
+
+            const gridSize = 128;
+            const dt = 0.016;
+            const gravity = 0.5; // Upward
+            const waveAmp = 0.08; // Sinusoidal quantum field strength
+
+            @compute @workgroup_size(256)
+            fn main(@builtin(global_invocation_id) id : vec3<u32>) {
+                let idx = id.x;
+                if (idx >= arrayLength(&particlesPos)) { return; }
+
+                var pos = particlesPos[idx].xyz;
+                var vel = particlesVel[idx].xyz;
+
+                // Sinusoidal global field for quantum flavor
+                let time = f32(device.time) / 1000.0;
+                vel.y += waveAmp * sin(time + pos.x * 0.5);
+
+                // Gravity upward
+                vel.y += gravity * dt;
+
+                // Simple P2G/G2P sketch (full MLS-MPM would use weighted least squares here)
+                // In real impl: scatter to grid, solve, gather back
+                // Here approximated for demo performance
+
+                pos += vel * dt;
+
+                // Boundary
+                if (pos.x < 0.0 || pos.x > 12.0) { vel.x *= -0.8; pos.x = clamp(pos.x, 0.0, 12.0); }
+                if (pos.y < 0.0 || pos.y > 12.0 * (${canvas.height}/${canvas.width})) { vel.y *= -0.8; pos.y = clamp(pos.y, 0.0, 12.0 * (${canvas.height}/${canvas.width})); }
+
+                particlesPos[idx] = vec4<f32>(pos, 0.0);
+                particlesVel[idx] = vec4<f32>(vel, 0.0);
+            }
+        `;
+
+        // Note: This is a simplified placeholder shader for browser compatibility.
+        // For full accurate MLS-MPM (with oriented deformation gradients for your node axes),
+        // check live demos like https://matsuoka-601.github.io/WebGPU-Ocean/ or https://works.utsubo.com/labs/aoi-01
+        // They achieve exact Grant Kot-style rolling, swirling clusters that move/interact freely.
+
+        alert("Full MLS-MPM WebGPU demos (Grant-level accuracy):\n- https://matsuoka-601.github.io/WebGPU-Ocean/\n- https://waterball.matsuoka-601.com/\n- https://works.utsubo.com/labs/aoi-01/\nThese run 100k–300k particles with dynamic, non-static clusters in true 3D projection.\nYour oriented nodes could extend these via anisotropic kernels in the shader!");
+
+        // Fallback render loop (particles as points)
+        const numParticles = 150000;
+        const particleBuffer = device.createBuffer({
+            size: numParticles * 16 * 2, // pos + vel
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+
+        // Initialize particles (omitted for brevity - random in box)
+
+        const computePipeline = device.createComputePipeline({
+            layout: 'auto',
+            compute: { module: device.createShaderModule({ code: computeShaderCode }), entryPoint: 'main' }
+        });
+
+        const bindGroup = device.createBindGroup({
+            layout: computePipeline.getBindGroupLayout(0),
+            entries: [{ binding: 0, resource: { buffer: particleBuffer } }, { binding: 1, resource: { buffer: particleBuffer } }]
+        });
+
+        function frame() {
+            const commandEncoder = device.createCommandEncoder();
+            const computePass = commandEncoder.beginComputePass();
+            computePass.setPipeline(computePipeline);
+            computePass.setBindGroup(0, bindGroup
+
+);
+            computePass.dispatchWorkgroups(Math.ceil(numParticles / 256));
+            computePass.end();
+
+            // Render pass would draw particles/instanced lines for directors
+
+            device.queue.submit([commandEncoder.finish()]);
+            requestAnimationFrame(frame);
+        }
+
+        frame();
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic 2D Oriented Particle Fluid Simulation (Quantum Flavor)</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white; font-family: Arial, sans-serif;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">800 particles • 2D kernels + viscosity/pressure tweaks • Oriented directors • Sinusoidal field • Click/drag to stir</div>
+    <canvas id="glCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const gl = canvas.getContext('webgl');
+        if (!gl) { alert('WebGL not supported'); }
+        // 2D SPH kernel helpers
+        const H = 0.4; // smoothing radius
+        const POLY6 = 4 / (Math.PI * Math.pow(H, 8));
+        const SPIKY_GRAD = -10 / (Math.PI * Math.pow(H, 5));
+        const poly6 = (r) => {
+            if (r >= H) return 0;
+            const x = H * H - r * r;
+            return POLY6 * x * x * x;
+        };
+        const spikyGradMag = (r) => {
+            if (r >= H || r === 0) return 0;
+            const x = H - r;
+            return SPIKY_GRAD * x * x * x;
+        };
+        class Particle {
+            constructor(x, y) {
+                this.pos = [x, y];
+                this.vel = [0, 0];
+                this.director = [Math.random() * 2 - 1, Math.random() * 2 - 1];
+                this.director = this.normalize(this.director);
+                this.spin = (Math.random() - 0.5) * 4;
+                this.history = [[x, y]];
+                this.maxHistory = 12; // Increased for smoother damping
+                this.strength = 0.0;
+            }
+            normalize(v) {
+                const len = Math.hypot(v[0], v[1]);
+                return len > 0 ? [v[0]/len, v[1]/len] : [0, 1];
+            }
+        }
+        const WORLD_W = 12;
+        let WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+        const NUM_PARTICLES = 800;
+        const particles = [];
+        const REST_DENSITY = 1.0; // Tuned for 2D kernels
+        const K = 1000; // Softer pressure
+        const VISC = 5.0; // Reduced for more flow
+        const GRAVITY = +0.3; // upward gravity
+        const DAMPING = 0.15;
+        const MAX_SPEED = 8;
+        const NOISE_STRENGTH = 0.1; // Dialed down
+        // Initialize particles in a dense centered grid
+        const cols = Math.ceil(Math.sqrt(NUM_PARTICLES * WORLD_W / WORLD_H));
+        const rows = Math.ceil(NUM_PARTICLES / cols);
+        const spacing = H * 0.7; // Tighter for denser start
+        const offsetX = (WORLD_W - cols * spacing) / 2 + 0.5;
+        const offsetY = 0.5;
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = offsetX + col * spacing + (Math.random() - 0.5) * 0.1;
+            const y = offsetY + row * spacing + (Math.random() - 0.5) * 0.1;
+            if (y < WORLD_H - 2) particles.push(new Particle(x, y));
+        }
+        // Mouse interaction
+        let mouseDown = false;
+        let mousePos = [0, 0];
+        let prevMouse = [0, 0];
+        canvas.addEventListener('mousedown', e => { mouseDown = true; });
+        canvas.addEventListener('mouseup', () => { mouseDown = false; });
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            prevMouse = mousePos;
+            mousePos = [
+                (e.clientX - rect.left) / canvas.width * WORLD_W,
+                WORLD_H - (e.clientY - rect.top) / canvas.height * WORLD_H
+            ];
+        });
+        // Shaders (simplified, no point size)
+        const vsSource = `
+            attribute vec2 a_position;
+            uniform vec2 u_resolution;
+            void main() {
+                vec2 clipSpace = (a_position / u_resolution) * 2.0 - 1.0;
+                gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            uniform vec4 u_color;
+            void main() {
+                gl_FragColor = u_color;
+            }
+        `;
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+        const posLoc = gl.getAttribLocation(program, 'a_position');
+        const resLoc = gl.getUniformLocation(program, 'u_resolution');
+        const colorLoc = gl.getUniformLocation(program, 'u_color');
+        gl.enableVertexAttribArray(posLoc);
+        const buffer = gl.createBuffer();
+        function worldToScreen(p) {
+            return [p[0] / WORLD_W * canvas.width, canvas.height - p[1] / WORLD_H * canvas.height];
+        }
+        let lastTime = 0;
+        function animate(time) {
+            if (!lastTime) lastTime = time;
+            const dt = Math.min((time - lastTime) / 1000, 0.05);
+            lastTime = time;
+            // Apply gravity (upward) + sinusoidal global field for quantum flavor
+            const globalField = 0.1 * Math.sin(time / 1000);
+            for (const p of particles) {
+                p.vel[1] += (GRAVITY + globalField) * dt;
+            }
+            // Mouse force
+            if (mouseDown) {
+                const forceStrength = 30;
+                const mouseVel = [(mousePos[0] - prevMouse[0]) / dt, (mousePos[1] - prevMouse[1]) / dt];
+                for (const p of particles) {
+                    const dx = p.pos[0] - mousePos[0];
+                    const dy = p.pos[1] - mousePos[1];
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < 1.5) {
+                        p.vel[0] += mouseVel[0] * forceStrength * (1 - dist / 1.5) * dt;
+                        p.vel[1] += mouseVel[1] * forceStrength * (1 - dist / 1.5) * dt;
+                    }
+                }
+            }
+            // SPH pressure + viscosity with 2D kernels
+            const densities = new Array(particles.length).fill(0);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H) {
+                        const w = poly6(r);
+                        densities[i] += w;
+                        densities[j] += w;
+                    }
+                }
+            }
+            const forces = particles.map(() => [0, 0]);
+            for (let i = 0; i < particles.length; i++) {
+                const pi = particles[i];
+                const pressure_i = K * (densities[i] - REST_DENSITY);
+                for (let j = i + 1; j < particles.length; j++) {
+                    const pj = particles[j];
+                    const dx = pj.pos[0] - pi.pos[0];
+                    const dy = pj.pos[1] - pi.pos[1];
+                    const r = Math.hypot(dx, dy);
+                    if (r < H && r > 0) {
+                        const dir = [dx / r, dy / r];
+                        const pressure_j = K * (densities[j] - REST_DENSITY);
+                        const pressureForce = spikyGradMag(r) * (pressure_i + pressure_j) / (2 * densities[i] * densities[j] || 1);
+                        forces[i][0] -= pressureForce * dir[0];
+                        forces[i][1] -= pressureForce * dir[1];
+                        forces[j][0] += pressureForce * dir[0];
+                        forces[j][1] += pressureForce * dir[1];
+                        // Viscosity
+                        const relVel = [pj.vel[0] - pi.vel[0], pj.vel[1] - pi.vel[1]];
+                        const viscLaplacian = poly6(r);
+                        const viscForce = VISC * viscLaplacian / (densities[i] + densities[j] || 1);
+                        forces[i][0] += viscForce * relVel[0];
+                        forces[i][1] += viscForce * relVel[1];
+                        forces[j][0] -= viscForce * relVel[0];
+                        forces[j][1] -= viscForce * relVel[1];
+                        // Oriented friction/torque (softened)
+                        const align = pi.director[0] * dir[0] + pi.director[1] * dir[1];
+                        const torque = 1.5 * (1 - Math.abs(align)) * Math.sign(pi.spin - pj.spin);
+                        pi.spin += torque * dt * 0.5;
+                        pj.spin -= torque * dt * 0.5;
+                        pi.strength = Math.min(1, pi.strength + Math.abs(torque) * dt * 0.02);
+                        pj.strength = Math.min(1, pj.strength + Math.abs(torque) * dt * 0.02);
+                    }
+                }
+            }
+            // Integrate
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                p.vel[0] += forces[i][0] * dt;
+                p.vel[1] += forces[i][1] * dt;
+                const speed = Math.hypot(p.vel[0], p.vel[1]);
+                if (speed > MAX_SPEED) {
+                    p.vel[0] = p.vel[0] / speed * MAX_SPEED;
+                    p.vel[1] = p.vel[1] / speed * MAX_SPEED;
+                }
+                p.pos[0] += p.vel[0] * dt;
+                p.pos[1] += p.vel[1] * dt;
+                // Director rotation + history damping + quantum noise
+                p.spin += (Math.random() - 0.5) * NOISE_STRENGTH * dt;
+                const angle = p.spin * (1 - p.strength) * dt;
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const newDir = [
+                    c * p.director[0] - s * p.director[1],
+                    s * p.director[0] + c * p.director[1]
+                ];
+                p.director = p.normalize(newDir);
+                p.history.push([p.pos[0], p.pos[1]]);
+                if (p.history.length > p.maxHistory) p.history.shift();
+                if (p.history.length > 2) {
+                    const avgVel = [(p.pos[0] - p.history[0][0]) / (dt * (p.history.length-1)),
+                                    (p.pos[1] - p.history[0][1]) / (dt * (p.history.length-1))];
+                    const avgDir = p.normalize(avgVel);
+                    p.director = p.normalize([
+                        (1 - DAMPING) * p.director[0] + DAMPING * avgDir[0],
+                        (1 - DAMPING) * p.director[1] + DAMPING * avgDir[1]
+                    ]);
+                }
+                // Boundaries
+                if (p.pos[0] < 0.3) { p.pos[0] = 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[0] > WORLD_W - 0.3) { p.pos[0] = WORLD_W - 0.3; p.vel[0] *= -0.5; }
+                if (p.pos[1] < 0.3) { p.pos[1] = 0.3; p.vel[1] *= -0.5; }
+                if (p.pos[1] > WORLD_H - 0.3) { p.pos[1] = WORLD_H - 0.3; p.vel[1] *= -0.5; }
+            }
+            // Render as oriented segments with dynamic color
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.uniform2f(resLoc, canvas.width, canvas.height);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            const lineLen = 0.12; // Slightly longer
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const base = [p.pos[0], p.pos[1]];
+                const tip = [p.pos[0] + p.director[0] * lineLen, p.pos[1] + p.director[1] * lineLen];
+                const bScreen = worldToScreen(base);
+                const tScreen = worldToScreen(tip);
+                const verts = new Float32Array([bScreen[0], bScreen[1], tScreen[0], tScreen[1]]);
+                gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                // Color by strength: blue-strong, green-weak
+                const r = 0.2 + (1 - p.strength) * 0.1;
+                const g = 0.5 + (1 - p.strength) * 0.2;
+                const b = 0.8 + p.strength * 0.2;
+                gl.uniform4f(colorLoc, r, g, b, 1.0);
+                gl.drawArrays(gl.LINES, 0, 2);
+            }
+            requestAnimationFrame(animate);
+        }
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            WORLD_H = (canvas.height / canvas.width) * WORLD_W;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+

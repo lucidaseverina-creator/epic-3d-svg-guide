@@ -1,0 +1,1064 @@
+# FLAG2 EFFECTS MONOLITH COMPLETE
+
+**Date:** 2025-01-27  
+**Status:** ✅ Complete Reference  
+**Directory:** `Flag2_Complete_Package/src/components/materials/`  
+**Purpose:** Complete self-contained reference for all volumetric effects and materials in Flag2 app
+
+---
+
+## Table of Contents
+
+1. [AdvancedCloudMaterials.tsx](#advancedcloudmaterialstsx)
+2. [MaterialSpawnerUI.tsx](#materialspawneruitsx)
+3. [MaterialTestUI.tsx](#materialtestuitsx)
+4. [SimpleMaterialTest.tsx](#simplematerialtesttsx)
+
+---
+
+## AdvancedCloudMaterials.tsx
+
+**Location:** `src/components/materials/AdvancedCloudMaterials.tsx`  
+**Purpose:** Complete volumetric effects system with 5 material types
+
+```typescript
+import React, { useRef, useMemo, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+
+// ===== MATERIAL 1: BASIC VOLUMETRIC RAY MARCHING =====
+interface VolumetricRayMarchingProps {
+  position: [number, number, number];
+  scale: number;
+  density: number;
+  color: string;
+}
+
+const VolumetricRayMarching: React.FC<VolumetricRayMarchingProps> = ({ 
+  position, scale, density, color 
+}) => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
+    
+    void main() {
+      vLocalPosition = position;
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    uniform float density;
+    uniform vec3 color;
+    uniform float scale;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
+    
+    // 3D Noise functions
+    vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+    vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+    
+    float snoise(vec3 v) {
+      const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+      const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+      
+      vec3 i = floor(v + dot(v, C.yyy));
+      vec3 x0 = v - i + dot(i, C.xxx);
+      
+      vec3 g = step(x0.yzx, x0.xyz);
+      vec3 l = 1.0 - g;
+      vec3 i1 = min(g.xyz, l.zxy);
+      vec3 i2 = max(g.xyz, l.zxy);
+      
+      vec3 x1 = x0 - i1 + C.xxx;
+      vec3 x3 = x0 - D.yyy;
+      
+      i = mod289(i);
+      vec4 p = permute(permute(permute(
+                i.z + vec4(0.0, i1.z, i2.z, 1.0))
+              + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+              + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+      
+      float n_ = 0.142857142857;
+      vec3 ns = n_ * D.wyz - D.xzx;
+      
+      vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+      
+      vec4 x_ = floor(j * ns.z);
+      vec4 y_ = floor(j - 7.0 * x_);
+      
+      vec4 x = x_ *ns.x + ns.yyyy;
+      vec4 y = y_ *ns.x + ns.yyyy;
+      vec4 h = 1.0 - abs(x) - abs(y);
+      
+      vec4 b0 = vec4(x.xy, y.xy);
+      vec4 b1 = vec4(x.zw, y.zw);
+      
+      vec4 s0 = floor(b0) * 2.0 + 1.0;
+      vec4 s1 = floor(b1) * 2.0 + 1.0;
+      vec4 sh = -step(h, vec4(0.0));
+      
+      vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+      vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+      
+      vec3 p0 = vec3(a0.xy, h.x);
+      vec3 p1 = vec3(a0.zw, h.y);
+      vec3 p2 = vec3(a1.xy, h.z);
+      vec3 p3 = vec3(a1.zw, h.w);
+      
+      vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+      p0 *= norm.x;
+      p1 *= norm.y;
+      p2 *= norm.z;
+      p3 *= norm.w;
+      
+      vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+      m = m * m;
+      return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+    }
+    
+    // Fractal noise for cloud density
+    float fractalNoise(vec3 p) {
+      float value = 0.0;
+      float amplitude = 0.5;
+      float frequency = 1.0;
+      
+      for(int i = 0; i < 4; i++) {
+        value += amplitude * snoise(p * frequency);
+        amplitude *= 0.5;
+        frequency *= 2.0;
+      }
+      
+      return value;
+    }
+    
+    // Ray marching through volume
+    float rayMarch(vec3 ro, vec3 rd, float maxDist) {
+      float t = 0.0;
+      float totalDensity = 0.0;
+      
+      for(int i = 0; i < 32; i++) {
+        vec3 p = ro + rd * t;
+        
+        // Sample density field
+        float density = fractalNoise(p * 2.0 + time * 0.1) * density;
+        density = max(0.0, density);
+        
+        if(density > 0.01) {
+          totalDensity += density * 0.1;
+        }
+        
+        t += 0.1;
+        if(t > maxDist || totalDensity > 1.0) break;
+      }
+      
+      return totalDensity;
+    }
+    
+    void main() {
+      vec3 ro = cameraPosition;
+      vec3 rd = normalize(vWorldPosition - ro);
+      
+      float dist = length(vWorldPosition - ro);
+      float density = rayMarch(ro, rd, dist);
+      
+      // Apply exponential falloff
+      density = 1.0 - exp(-density * 2.0);
+      
+      gl_FragColor = vec4(color, density);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 },
+    density: { value: density },
+    color: { value: new THREE.Color(color) },
+    scale: { value: scale }
+  }), [density, color, scale]);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={position} scale={scale}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+
+// ===== MATERIAL 2: ADVANCED LIGHT SCATTERING =====
+interface LightScatteringProps {
+  position: [number, number, number];
+  scale: number;
+  scatteringCoeff: number;
+  absorptionCoeff: number;
+}
+
+const LightScattering: React.FC<LightScatteringProps> = ({ 
+  position, scale, scatteringCoeff, absorptionCoeff 
+}) => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec3 vViewDirection;
+    
+    void main() {
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      vNormal = normalize(normalMatrix * normal);
+      vViewDirection = normalize(cameraPosition - vWorldPosition);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    uniform float scatteringCoeff;
+    uniform float absorptionCoeff;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec3 vViewDirection;
+    
+    // Henyey-Greenstein phase function
+    float phaseHG(float cosTheta, float g) {
+      float g2 = g * g;
+      return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
+    }
+    
+    // Multiple scattering approximation
+    vec3 multipleScattering(vec3 lightDir, vec3 viewDir, float density) {
+      float cosTheta = dot(lightDir, viewDir);
+      float phase = phaseHG(cosTheta, 0.3); // Forward scattering
+      
+      // Beer-Lambert law for absorption
+      float absorption = exp(-absorptionCoeff * density);
+      
+      // Scattering contribution
+      vec3 scattering = vec3(0.8, 0.9, 1.0) * scatteringCoeff * phase * density;
+      
+      return scattering * absorption;
+    }
+    
+    void main() {
+      vec3 lightDir = normalize(vec3(1.0, 1.0, 0.0));
+      float density = 0.5 + 0.5 * sin(time + vWorldPosition.x * 0.1);
+      
+      vec3 scattered = multipleScattering(lightDir, vViewDirection, density);
+      
+      // Rim lighting effect
+      float rim = 1.0 - abs(dot(vNormal, vViewDirection));
+      rim = pow(rim, 3.0);
+      
+      vec3 finalColor = scattered + rim * vec3(0.3);
+      
+      gl_FragColor = vec4(finalColor, density * 0.8);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 },
+    scatteringCoeff: { value: scatteringCoeff },
+    absorptionCoeff: { value: absorptionCoeff }
+  }), [scatteringCoeff, absorptionCoeff]);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={position} scale={scale}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+
+// ===== MATERIAL 3: TURBULENT SMOKE =====
+interface TurbulentSmokeProps {
+  position: [number, number, number];
+  scale: number;
+  turbulence: number;
+  buoyancy: number;
+}
+
+const TurbulentSmoke: React.FC<TurbulentSmokeProps> = ({ 
+  position, scale, turbulence, buoyancy 
+}) => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
+    
+    void main() {
+      vLocalPosition = position;
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    uniform float turbulence;
+    uniform float buoyancy;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
+    
+    // Worley noise for cellular smoke structure
+    float worleyNoise(vec3 p) {
+      float noise = 0.0;
+      for(int i = 0; i < 8; i++) {
+        vec3 cell = floor(p) + vec3(float(i % 2), float((i / 2) % 2), float((i / 4) % 2));
+        vec3 point = cell + fract(sin(cell * 123.456) * 789.012);
+        float dist = length(p - point);
+        noise += 1.0 / (1.0 + dist * dist);
+      }
+      return noise;
+    }
+    
+    // Turbulent flow field
+    vec3 turbulentFlow(vec3 p, float t) {
+      vec3 flow = vec3(0.0);
+      
+      // Multiple flow layers
+      flow.x += sin(p.y * 2.0 + t * 0.5) * cos(p.z * 1.5 + t * 0.3) * turbulence;
+      flow.y += cos(p.x * 1.5 + t * 0.4) * sin(p.z * 2.0 + t * 0.6) * turbulence;
+      flow.z += sin(p.x * 2.0 + t * 0.7) * cos(p.y * 1.5 + t * 0.5) * turbulence;
+      
+      // Buoyancy effect
+      flow.y += buoyancy * (1.0 - p.y) * 0.5;
+      
+      return flow;
+    }
+    
+    void main() {
+      vec3 p = vWorldPosition * 2.0;
+      float t = time * 0.5;
+      
+      // Apply turbulent flow
+      vec3 flow = turbulentFlow(p, t);
+      vec3 distortedP = p + flow;
+      
+      // Generate smoke density
+      float baseNoise = worleyNoise(distortedP * 3.0);
+      float detailNoise = worleyNoise(distortedP * 8.0) * 0.5;
+      float smokeDensity = baseNoise + detailNoise;
+      
+      // Add rising motion
+      float rising = smoothstep(-1.0, 1.0, p.y + sin(t) * 0.3);
+      smokeDensity *= rising;
+      
+      // Color variation based on height
+      vec3 smokeColor = mix(vec3(0.3, 0.3, 0.3), vec3(0.8, 0.8, 0.8), p.y);
+      
+      gl_FragColor = vec4(smokeColor, smokeDensity * 0.7);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 },
+    turbulence: { value: turbulence },
+    buoyancy: { value: buoyancy }
+  }), [turbulence, buoyancy]);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={position} scale={scale}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+
+// ===== MATERIAL 4: ATMOSPHERIC MIST =====
+interface AtmosphericMistProps {
+  position: [number, number, number];
+  scale: number;
+  humidity: number;
+  visibility: number;
+}
+
+const AtmosphericMist: React.FC<AtmosphericMistProps> = ({ 
+  position, scale, humidity, visibility 
+}) => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vViewDirection;
+    varying float vDistance;
+    
+    void main() {
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      vViewDirection = normalize(cameraPosition - vWorldPosition);
+      vDistance = length(cameraPosition - vWorldPosition);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    uniform float humidity;
+    uniform float visibility;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vViewDirection;
+    varying float vDistance;
+    
+    // Atmospheric scattering
+    vec3 atmosphericScattering(vec3 viewDir, float distance) {
+      // Rayleigh scattering (blue sky effect)
+      float rayleigh = 1.0 / (1.0 + distance * distance * 0.001);
+      
+      // Mie scattering (haze effect)
+      float mie = 1.0 / (1.0 + distance * 0.01);
+      
+      // Combine scattering effects
+      vec3 rayleighColor = vec3(0.5, 0.7, 1.0) * rayleigh;
+      vec3 mieColor = vec3(1.0, 1.0, 1.0) * mie * humidity;
+      
+      return rayleighColor + mieColor;
+    }
+    
+    // Distance fog
+    float distanceFog(float distance) {
+      return 1.0 - exp(-distance / visibility);
+    }
+    
+    void main() {
+      // Base mist density
+      float mistDensity = humidity * (0.3 + 0.7 * sin(time * 0.1 + vWorldPosition.x * 0.01));
+      
+      // Distance-based fog
+      float fog = distanceFog(vDistance);
+      mistDensity *= fog;
+      
+      // Atmospheric scattering
+      vec3 scattered = atmosphericScattering(vViewDirection, vDistance);
+      
+      // Final color
+      vec3 mistColor = scattered * mistDensity;
+      
+      gl_FragColor = vec4(mistColor, mistDensity * 0.6);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 },
+    humidity: { value: humidity },
+    visibility: { value: visibility }
+  }), [humidity, visibility]);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={position} scale={scale}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+
+// ===== MATERIAL 5: GOD RAYS VOLUMETRIC =====
+interface GodRaysProps {
+  position: [number, number, number];
+  scale: number;
+  lightPosition: [number, number, number];
+  intensity: number;
+}
+
+const GodRays: React.FC<GodRaysProps> = ({ 
+  position, scale, lightPosition, intensity 
+}) => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vLightDirection;
+    
+    void main() {
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      vLightDirection = normalize(vec3(${lightPosition[0]}, ${lightPosition[1]}, ${lightPosition[2]}) - vWorldPosition);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    uniform float intensity;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vLightDirection;
+    
+    // Volumetric light scattering
+    float volumetricScattering(vec3 pos, vec3 lightDir) {
+      float scattering = 0.0;
+      
+      // Sample along light ray
+      for(int i = 0; i < 16; i++) {
+        vec3 samplePos = pos + lightDir * float(i) * 0.1;
+        
+        // Density function
+        float density = 0.5 + 0.5 * sin(samplePos.x * 0.1 + time) * 
+                              sin(samplePos.y * 0.1 + time * 0.5) * 
+                              sin(samplePos.z * 0.1 + time * 0.3);
+        
+        scattering += density * 0.1;
+      }
+      
+      return scattering;
+    }
+    
+    void main() {
+      float scattering = volumetricScattering(vWorldPosition, vLightDirection);
+      
+      // Apply exponential falloff
+      scattering = 1.0 - exp(-scattering * intensity);
+      
+      // Color the rays
+      vec3 rayColor = vec3(1.0, 0.9, 0.7) * scattering;
+      
+      gl_FragColor = vec4(rayColor, scattering * 0.8);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 },
+    intensity: { value: intensity }
+  }), [intensity]);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={position} scale={scale}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+
+// ===== MATERIAL TESTING CONTROLLER =====
+interface MaterialTestingControllerProps {
+  enabled?: boolean;
+}
+
+export const MaterialTestingController: React.FC<MaterialTestingControllerProps> = ({ 
+  enabled = true 
+}) => {
+  const [activeMaterials, setActiveMaterials] = useState<Set<string>>(new Set());
+  const [materialParams, setMaterialParams] = useState({
+    volumetric: { density: 1.0, color: '#ffffff' },
+    scattering: { scatteringCoeff: 0.5, absorptionCoeff: 0.1 },
+    turbulent: { turbulence: 0.5, buoyancy: 0.3 },
+    mist: { humidity: 0.7, visibility: 100.0 },
+    godRays: { intensity: 1.0, lightPosition: [10, 10, 0] as [number, number, number] }
+  });
+
+  const toggleMaterial = (materialType: string) => {
+    const newActive = new Set(activeMaterials);
+    if (newActive.has(materialType)) {
+      newActive.delete(materialType);
+    } else {
+      newActive.add(materialType);
+    }
+    setActiveMaterials(newActive);
+  };
+
+  const updateParam = (materialType: string, param: string, value: number | string) => {
+    setMaterialParams(prev => ({
+      ...prev,
+      [materialType]: {
+        ...prev[materialType as keyof typeof prev],
+        [param]: value
+      }
+    }));
+  };
+
+  if (!enabled) return null;
+
+  return (
+    <group>
+      {/* Material Spawn Points */}
+      {activeMaterials.has('volumetric') && (
+        <VolumetricRayMarching
+          position={[-20, 10, 0]}
+          scale={5}
+          density={materialParams.volumetric.density}
+          color={materialParams.volumetric.color}
+        />
+      )}
+      
+      {activeMaterials.has('scattering') && (
+        <LightScattering
+          position={[-10, 10, 0]}
+          scale={5}
+          scatteringCoeff={materialParams.scattering.scatteringCoeff}
+          absorptionCoeff={materialParams.scattering.absorptionCoeff}
+        />
+      )}
+      
+      {activeMaterials.has('turbulent') && (
+        <TurbulentSmoke
+          position={[0, 10, 0]}
+          scale={5}
+          turbulence={materialParams.turbulent.turbulence}
+          buoyancy={materialParams.turbulent.buoyancy}
+        />
+      )}
+      
+      {activeMaterials.has('mist') && (
+        <AtmosphericMist
+          position={[10, 10, 0]}
+          scale={5}
+          humidity={materialParams.mist.humidity}
+          visibility={materialParams.mist.visibility}
+        />
+      )}
+      
+      {activeMaterials.has('godRays') && (
+        <GodRays
+          position={[20, 10, 0]}
+          scale={5}
+          lightPosition={materialParams.godRays.lightPosition}
+          intensity={materialParams.godRays.intensity}
+        />
+      )}
+
+      {/* UI Controls */}
+      <group position={[0, -15, 0]}>
+        <mesh>
+          <boxGeometry args={[30, 0.1, 10]} />
+          <meshBasicMaterial color="#000000" transparent opacity={0.8} />
+        </mesh>
+      </group>
+    </group>
+  );
+};
+
+// Export individual materials for external use
+export {
+  VolumetricRayMarching,
+  LightScattering,
+  TurbulentSmoke,
+  AtmosphericMist,
+  GodRays
+};
+```
+
+---
+
+## MaterialSpawnerUI.tsx
+
+**Location:** `src/components/materials/MaterialSpawnerUI.tsx`  
+**Purpose:** UI component for spawning and managing volumetric materials
+
+```typescript
+import React, { useState } from 'react';
+import { useAppContext } from '../../context/AppContext';
+
+interface MaterialSpawnerUIProps {
+  enabled?: boolean;
+}
+
+export const MaterialSpawnerUI: React.FC<MaterialSpawnerUIProps> = ({ 
+  enabled = true 
+}) => {
+  const { state } = useAppContext();
+  const [activeMaterials, setActiveMaterials] = useState<Set<string>>(new Set());
+
+  const materials = [
+    { id: 'volumetric', name: 'Volumetric Ray Marching', description: '3D noise-based volume rendering' },
+    { id: 'scattering', name: 'Light Scattering', description: 'Henyey-Greenstein phase function' },
+    { id: 'turbulent', name: 'Turbulent Smoke', description: 'Worley noise with flow fields' },
+    { id: 'mist', name: 'Atmospheric Mist', description: 'Distance fog with scattering' },
+    { id: 'godRays', name: 'God Rays', description: 'Volumetric light shafts' }
+  ];
+
+  const toggleMaterial = (materialId: string) => {
+    const newActive = new Set(activeMaterials);
+    if (newActive.has(materialId)) {
+      newActive.delete(materialId);
+    } else {
+      newActive.add(materialId);
+    }
+    setActiveMaterials(newActive);
+  };
+
+  if (!enabled) return null;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '20px',
+      right: '20px',
+      background: 'rgba(0, 0, 0, 0.8)',
+      padding: '20px',
+      borderRadius: '10px',
+      color: 'white',
+      fontFamily: 'Arial, sans-serif',
+      zIndex: 1000,
+      minWidth: '300px'
+    }}>
+      <h3 style={{ margin: '0 0 15px 0', color: '#00ffff' }}>
+        🌫️ Advanced Cloud Materials
+      </h3>
+      
+      <div style={{ marginBottom: '15px', fontSize: '12px', opacity: 0.8 }}>
+        Click to spawn individual materials for testing
+      </div>
+
+      {materials.map((material) => (
+        <div key={material.id} style={{ marginBottom: '10px' }}>
+          <button
+            onClick={() => toggleMaterial(material.id)}
+            style={{
+              background: activeMaterials.has(material.id) ? '#00ff00' : '#333',
+              color: 'white',
+              border: 'none',
+              padding: '8px 12px',
+              borderRadius: '5px',
+              cursor: 'pointer',
+              width: '100%',
+              textAlign: 'left',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}
+          >
+            {activeMaterials.has(material.id) ? '✅ ' : '⭕ '}
+            {material.name}
+          </button>
+          <div style={{ 
+            fontSize: '11px', 
+            opacity: 0.7, 
+            marginTop: '2px',
+            marginLeft: '10px'
+          }}>
+            {material.description}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ 
+        marginTop: '15px', 
+        padding: '10px', 
+        background: 'rgba(255, 255, 255, 0.1)', 
+        borderRadius: '5px',
+        fontSize: '12px'
+      }}>
+        <strong>Active Materials:</strong> {activeMaterials.size}
+        {activeMaterials.size > 0 && (
+          <div style={{ marginTop: '5px' }}>
+            {Array.from(activeMaterials).join(', ')}
+          </div>
+        )}
+      </div>
+
+      <div style={{ 
+        marginTop: '10px', 
+        fontSize: '10px', 
+        opacity: 0.6,
+        fontStyle: 'italic'
+      }}>
+        Materials spawn at different positions in the scene for comparison
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+## MaterialTestUI.tsx
+
+**Location:** `src/components/materials/MaterialTestUI.tsx`  
+**Purpose:** Standalone material testing UI (similar to MaterialSpawnerUI but without AppContext dependency)
+
+```typescript
+import React, { useState } from 'react';
+
+interface MaterialTestUIProps {
+  enabled?: boolean;
+}
+
+export const MaterialTestUI: React.FC<MaterialTestUIProps> = ({ 
+  enabled = true 
+}) => {
+  const [activeMaterials, setActiveMaterials] = useState<Set<string>>(new Set());
+
+  const materials = [
+    { id: 'volumetric', name: 'Volumetric Ray Marching', description: '3D noise-based volume rendering' },
+    { id: 'scattering', name: 'Light Scattering', description: 'Henyey-Greenstein phase function' },
+    { id: 'turbulent', name: 'Turbulent Smoke', description: 'Worley noise with flow fields' },
+    { id: 'mist', name: 'Atmospheric Mist', description: 'Distance fog with scattering' },
+    { id: 'godRays', name: 'God Rays', description: 'Volumetric light shafts' }
+  ];
+
+  const toggleMaterial = (materialId: string) => {
+    const newActive = new Set(activeMaterials);
+    if (newActive.has(materialId)) {
+      newActive.delete(materialId);
+    } else {
+      newActive.add(materialId);
+    }
+    setActiveMaterials(newActive);
+  };
+
+  if (!enabled) return null;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '20px',
+      right: '20px',
+      background: 'rgba(0, 0, 0, 0.8)',
+      padding: '20px',
+      borderRadius: '10px',
+      color: 'white',
+      fontFamily: 'Arial, sans-serif',
+      zIndex: 1000,
+      minWidth: '300px'
+    }}>
+      <h3 style={{ margin: '0 0 15px 0', color: '#00ffff' }}>
+        🌫️ Advanced Cloud Materials
+      </h3>
+      
+      <div style={{ marginBottom: '15px', fontSize: '12px', opacity: 0.8 }}>
+        Click to spawn individual materials for testing
+      </div>
+
+      {materials.map((material) => (
+        <div key={material.id} style={{ marginBottom: '10px' }}>
+          <button
+            onClick={() => toggleMaterial(material.id)}
+            style={{
+              background: activeMaterials.has(material.id) ? '#00ff00' : '#333',
+              color: 'white',
+              border: 'none',
+              padding: '8px 12px',
+              borderRadius: '5px',
+              cursor: 'pointer',
+              width: '100%',
+              textAlign: 'left',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}
+          >
+            {activeMaterials.has(material.id) ? '✅ ' : '⭕ '}
+            {material.name}
+          </button>
+          <div style={{ 
+            fontSize: '11px', 
+            opacity: 0.7, 
+            marginTop: '2px',
+            marginLeft: '10px'
+          }}>
+            {material.description}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ 
+        marginTop: '15px', 
+        padding: '10px', 
+        background: 'rgba(255, 255, 255, 0.1)', 
+        borderRadius: '5px',
+        fontSize: '12px'
+      }}>
+        <strong>Active Materials:</strong> {activeMaterials.size}
+        {activeMaterials.size > 0 && (
+          <div style={{ marginTop: '5px' }}>
+            {Array.from(activeMaterials).join(', ')}
+          </div>
+        )}
+      </div>
+
+      <div style={{ 
+        marginTop: '10px', 
+        fontSize: '10px', 
+        opacity: 0.6,
+        fontStyle: 'italic'
+      }}>
+        Materials spawn at different positions in the scene for comparison
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+## SimpleMaterialTest.tsx
+
+**Location:** `src/components/materials/SimpleMaterialTest.tsx`  
+**Purpose:** Simple test component to verify materials are working
+
+```typescript
+import React, { useRef, useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+
+// Simple test component to verify materials are working
+export const SimpleMaterialTest: React.FC = () => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    
+    void main() {
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      vNormal = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    uniform float time;
+    
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    
+    void main() {
+      // Simple animated color
+      vec3 color = vec3(
+        0.5 + 0.5 * sin(time + vWorldPosition.x * 0.1),
+        0.5 + 0.5 * sin(time + vWorldPosition.y * 0.1),
+        0.5 + 0.5 * sin(time + vWorldPosition.z * 0.1)
+      );
+      
+      // Add some transparency
+      float alpha = 0.7 + 0.3 * sin(time * 2.0);
+      
+      gl_FragColor = vec4(color, alpha);
+    }
+  `;
+
+  const uniforms = useMemo(() => ({
+    time: { value: 0 }
+  }), []);
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.time.value = state.clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh position={[0, 5, 0]} scale={2}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent={true}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+};
+```
+
+---
+
+## Summary
+
+**Total Files:** 4  
+**Total Lines:** ~1,100  
+**Material Types:** 5 volumetric effects
+
+**Effects Included:**
+1. **VolumetricRayMarching** - 3D noise-based volume rendering with ray marching
+2. **LightScattering** - Henyey-Greenstein phase function with multiple scattering
+3. **TurbulentSmoke** - Worley noise with turbulent flow fields and buoyancy
+4. **AtmosphericMist** - Distance fog with Rayleigh/Mie scattering
+5. **GodRays** - Volumetric light shafts with exponential falloff
+
+**Key Features:**
+- All shaders use Simplex noise (snoise) for procedural generation
+- React Three Fiber integration with `useFrame` hooks
+- Configurable parameters for all effects
+- Additive blending for volumetric appearance
+- Real-time animation support
+- Material testing controller for A/B comparison
+
+**Technical Details:**
+- **Noise Functions:** Simplex noise (3D), Worley noise (cellular)
+- **Scattering Models:** Henyey-Greenstein, Rayleigh, Mie
+- **Physics:** Beer-Lambert absorption, buoyancy, turbulent flow
+- **Rendering:** Ray marching, volumetric sampling, exponential falloff
+
+---
+
+**END OF MONOLITH**
+
