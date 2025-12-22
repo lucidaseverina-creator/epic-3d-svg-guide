@@ -1,5 +1,5 @@
 import React from 'react';
-import { Grid3X3, Sun, Moon, Box, BarChart2 } from 'lucide-react';
+import { Grid3X3, Sun, Moon, Box, BarChart2, Sparkles } from 'lucide-react';
 import { CameraPreset, RenderMode } from '@/types/engine';
 import { Button } from '@/components/ui/button';
 import {
@@ -21,6 +21,8 @@ interface BottomBarProps {
   onRenderModeChange?: (mode: RenderMode) => void;
   showStats?: boolean;
   onToggleStats?: () => void;
+  showEffects?: boolean;
+  onToggleEffects?: () => void;
   objectCount: number;
   selectedObjectName?: string | null;
 }
@@ -51,6 +53,8 @@ export const BottomBar: React.FC<BottomBarProps> = ({
   onRenderModeChange,
   showStats = false,
   onToggleStats,
+  showEffects = false,
+  onToggleEffects,
   objectCount,
   selectedObjectName,
 }) => {
@@ -133,6 +137,20 @@ export const BottomBar: React.FC<BottomBarProps> = ({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        
+        {/* Effects toggle */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-7 px-2 gap-1.5 text-xs",
+            showEffects ? "text-primary bg-primary/10" : "text-muted-foreground"
+          )}
+          onClick={onToggleEffects}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          <span>Effects</span>
+        </Button>
       </div>
       
       {/* Spacer */}
