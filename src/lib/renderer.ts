@@ -133,10 +133,20 @@ export const renderScene = (
       // Calculate normal for lighting and backface culling
       const normal = calculateNormal(rotatedVerts);
 
-      // Backface culling: camera is at -Z looking toward +Z
-      // Faces with normals pointing toward +Z (away from camera) should be culled
-      // Faces with normals pointing toward -Z (toward camera) are visible
-      if (normal.z > 0) continue;
+      // View-direction-based backface culling for proper FOV handling
+      // Calculate view direction from camera to face center
+      // Camera is at Z = -cameraZ, looking toward scene
+      const cameraZ = scene.camera.position.z;
+      const viewDir = normalize({
+        x: center.x,
+        y: center.y,
+        z: center.z + cameraZ // Face center relative to camera position
+      });
+      
+      // Face is visible if normal points toward camera (dot product with view < 0)
+      // Use a small threshold to include edge faces
+      const dotProduct = dot(normal, viewDir);
+      if (dotProduct > 0.15) continue; // Small threshold keeps edge faces visible
 
       // Calculate lighting (use absolute normal for consistent lighting)
       const lightIntensity = calculateLighting(normal, scene.lights, scene.camera.rotation);

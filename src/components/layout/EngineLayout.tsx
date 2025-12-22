@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { EngineType, ToolType, PrimitiveType, CameraPreset, RenderMode } from '@/types/engine';
+import { EngineType, ToolType, CameraPreset, RenderMode } from '@/types/engine';
+import { EffectType } from '@/effects/types';
 import { useScene } from '@/hooks/useScene';
 import { renderScene, getDefaultConfig } from '@/lib/renderer';
 
@@ -14,10 +15,24 @@ import { DrawerContainer } from '@/components/drawers/DrawerContainer';
 import { ObjectsDrawer } from '@/components/drawers/ObjectsDrawer';
 import { LightingDrawer } from '@/components/drawers/LightingDrawer';
 import { PropertiesDrawer } from '@/components/drawers/PropertiesDrawer';
+import { EffectsPanel } from '@/components/effects/EffectsPanel';
+import { EffectsCanvas } from '@/components/effects/EffectsCanvas';
 
 interface EngineLayoutProps {
   engineType?: EngineType;
 }
+
+// Default effects state
+const defaultEffects: Record<EffectType, { enabled: boolean; intensity: number }> = {
+  metaballs: { enabled: false, intensity: 0.7 },
+  fluid: { enabled: false, intensity: 0.5 },
+  water: { enabled: false, intensity: 0.6 },
+  clouds: { enabled: false, intensity: 0.5 },
+  godrays: { enabled: false, intensity: 0.5 },
+  particles: { enabled: false, intensity: 0.5 },
+  fire: { enabled: false, intensity: 0.7 },
+  smoke: { enabled: false, intensity: 0.5 },
+};
 
 export const EngineLayout: React.FC<EngineLayoutProps> = ({
   engineType: initialEngine = 'classic',
@@ -35,6 +50,10 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('perspective');
   const [renderMode, setRenderMode] = useState<RenderMode>('solid');
   const [showStats, setShowStats] = useState(false);
+  const [showEffectsPanel, setShowEffectsPanel] = useState(false);
+  
+  // Effects state
+  const [effects, setEffects] = useState(defaultEffects);
   
   // Animation state
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -89,6 +108,27 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
     }
   }, [scene.objects, updateObject]);
   
+  // Effects handlers
+  const handleToggleEffect = useCallback((effectType: EffectType) => {
+    setEffects(prev => ({
+      ...prev,
+      [effectType]: {
+        ...prev[effectType],
+        enabled: !prev[effectType].enabled,
+      },
+    }));
+  }, []);
+  
+  const handleEffectIntensity = useCallback((effectType: EffectType, intensity: number) => {
+    setEffects(prev => ({
+      ...prev,
+      [effectType]: {
+        ...prev[effectType],
+        intensity,
+      },
+    }));
+  }, []);
+  
   // Render drawer content
   const renderDrawerContent = () => {
     switch (activeDrawer) {
@@ -109,6 +149,14 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
           <LightingDrawer
             lightingMode={scene.lightingMode}
             onLightingModeChange={setLightingMode}
+          />
+        );
+      case 'effects':
+        return (
+          <EffectsPanel
+            effects={effects}
+            onToggleEffect={handleToggleEffect}
+            onIntensityChange={handleEffectIntensity}
           />
         );
       case 'camera':
@@ -133,6 +181,7 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
       case 'camera': return 'Camera';
       case 'lighting': return 'Lighting';
       case 'rendering': return 'Rendering';
+      case 'effects': return 'Effects';
       case 'settings': return 'Settings';
       case 'boolean': return 'Boolean Operations';
       case 'sdf-settings': return 'SDF Settings';
@@ -178,9 +227,17 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
               onObjectTransform={applyTransform}
             />
             
+            {/* Effects Canvas Overlay */}
+            <EffectsCanvas
+              width={viewportSize.width}
+              height={viewportSize.height}
+              effects={effects}
+              lightingMode={scene.lightingMode}
+            />
+            
             {/* Properties panel when object selected */}
             {selectedObject && activeDrawer !== 'objects' && (
-              <div className="absolute top-4 right-4 w-72 bg-panel/95 backdrop-blur-xl border border-border/50 rounded-lg shadow-panel overflow-hidden">
+              <div className="absolute top-4 right-4 w-72 bg-panel/95 backdrop-blur-xl border border-border/50 rounded-lg shadow-panel overflow-hidden z-20">
                 <div className="h-8 flex items-center justify-between px-3 border-b border-border/30">
                   <span className="text-xs font-medium text-primary">Properties</span>
                   <button
@@ -222,6 +279,8 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
             onRenderModeChange={setRenderMode}
             showStats={showStats}
             onToggleStats={() => setShowStats(!showStats)}
+            showEffects={Object.values(effects).some(e => e.enabled)}
+            onToggleEffects={() => handleDrawerToggle('effects')}
             objectCount={scene.objects.length}
             selectedObjectName={selectedObject?.name}
           />
