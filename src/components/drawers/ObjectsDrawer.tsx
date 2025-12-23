@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Circle, Cylinder, Hexagon, Triangle, Donut, Trash2, Eye, EyeOff, Lock, Unlock } from 'lucide-react';
+import { Box, Circle, Cylinder, Hexagon, Triangle, Donut, Trash2, Eye, EyeOff, Lock, Unlock, Droplets, Cloud, Flame } from 'lucide-react';
 import { SceneObject, PrimitiveType } from '@/types/engine';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -21,6 +21,12 @@ const primitiveButtons: { type: PrimitiveType; icon: React.ReactNode; label: str
   { type: 'cone', icon: <Triangle className="w-4 h-4" />, label: 'Cone' },
   { type: 'torus', icon: <Donut className="w-4 h-4" />, label: 'Torus' },
   { type: 'pyramid', icon: <Hexagon className="w-4 h-4" />, label: 'Pyramid' },
+];
+
+const effectButtons: { type: PrimitiveType; icon: React.ReactNode; label: string }[] = [
+  { type: 'metaballs', icon: <Flame className="w-4 h-4 text-orange-500" />, label: 'Metaballs' },
+  { type: 'fluidBlob', icon: <Droplets className="w-4 h-4 text-blue-400" />, label: 'Fluid' },
+  { type: 'cloudVolume', icon: <Cloud className="w-4 h-4 text-gray-300" />, label: 'Cloud' },
 ];
 
 export const ObjectsDrawer: React.FC<ObjectsDrawerProps> = ({
@@ -50,6 +56,27 @@ export const ObjectsDrawer: React.FC<ObjectsDrawerProps> = ({
             >
               {prim.icon}
               <span className="text-[10px]">{prim.label}</span>
+            </Button>
+          ))}
+        </div>
+      </div>
+      
+      {/* Add 3D Effects */}
+      <div>
+        <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">
+          Add 3D Effect
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {effectButtons.map((effect) => (
+            <Button
+              key={effect.type}
+              variant="outline"
+              size="sm"
+              className="flex flex-col items-center gap-1 h-auto py-2 bg-secondary/30 border-border/50 hover:bg-secondary hover:border-primary/50"
+              onClick={() => onAdd(effect.type)}
+            >
+              {effect.icon}
+              <span className="text-[10px]">{effect.label}</span>
             </Button>
           ))}
         </div>

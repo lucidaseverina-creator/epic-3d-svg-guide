@@ -101,15 +101,16 @@ export const renderScene = (
   scene: Scene,
   config: EngineConfig,
   viewportWidth: number,
-  viewportHeight: number
+  viewportHeight: number,
+  time: number = 0
 ): ProjectedFace[] => {
   const projectedFaces: ProjectedFace[] = [];
   
   for (const obj of scene.objects) {
     if (!obj.visible) continue;
     
-    // Generate base faces for this primitive type
-    const baseFaces = generatePrimitiveFaces(obj.type, 50);
+    // Generate base faces for this primitive type (pass time for animated effects)
+    const baseFaces = generatePrimitiveFaces(obj.type, 50, time);
     
     for (const face of baseFaces) {
       // Transform vertices by object transform
