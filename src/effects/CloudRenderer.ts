@@ -64,7 +64,16 @@ export class CloudRenderer {
   }
   
   render(): string {
-    if (!this.canvas || !this.ctx) return '';
+    this.renderToCanvas();
+    return this.canvas?.toDataURL() || '';
+  }
+  
+  getCanvas(): HTMLCanvasElement | null {
+    return this.canvas;
+  }
+  
+  renderToCanvas(): void {
+    if (!this.canvas || !this.ctx) return;
     
     const ctx = this.ctx;
     const { density, coverage, turbulence, layers } = this.config;
@@ -156,8 +165,6 @@ export class CloudRenderer {
       ctx.arc(screenX, screenY, screenR, 0, Math.PI * 2);
       ctx.fill();
     }
-    
-    return this.canvas.toDataURL();
   }
   
   private hexToRgb(hex: string): { r: number; g: number; b: number } {

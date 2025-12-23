@@ -11,7 +11,7 @@ import {
   Settings,
   Combine,
   Zap,
-  Circle
+  Sparkles
 } from 'lucide-react';
 import { ToolType } from '@/types/engine';
 import { Button } from '@/components/ui/button';
@@ -45,6 +45,7 @@ const rightTopButtons: IconButtonConfig[] = [
   { id: 'objects', icon: <Box className="w-4 h-4" />, label: 'Objects', type: 'drawer' },
   { id: 'camera', icon: <Camera className="w-4 h-4" />, label: 'Camera', type: 'drawer' },
   { id: 'lighting', icon: <Lightbulb className="w-4 h-4" />, label: 'Lighting', type: 'drawer' },
+  { id: 'effects', icon: <Sparkles className="w-4 h-4" />, label: 'Effects', type: 'drawer' },
   { id: 'rendering', icon: <Code className="w-4 h-4" />, label: 'Rendering', type: 'drawer' },
 ];
 

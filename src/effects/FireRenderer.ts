@@ -88,7 +88,16 @@ export class FireRenderer {
   }
   
   render(): string {
-    if (!this.canvas || !this.ctx) return '';
+    this.renderToCanvas();
+    return this.canvas?.toDataURL() || '';
+  }
+  
+  getCanvas(): HTMLCanvasElement | null {
+    return this.canvas;
+  }
+  
+  renderToCanvas(): void {
+    if (!this.canvas || !this.ctx) return;
     
     const ctx = this.ctx;
     const { flames, height: fireHeight, turbulence, intensity } = this.config;
@@ -225,8 +234,6 @@ export class FireRenderer {
     ctx.fillRect(0, fireBaseY - fireHeight / scaleY, w, fireHeight / scaleY + 50);
     
     ctx.globalCompositeOperation = 'source-over';
-    
-    return this.canvas.toDataURL();
   }
   
   private hexToRgb(hex: string): { r: number; g: number; b: number } {
