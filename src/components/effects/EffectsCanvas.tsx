@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { 
   EffectType, 
   defaultMetaballConfig,
@@ -41,18 +41,27 @@ export const EffectsCanvas: React.FC<EffectsCanvasProps> = ({
   }>({});
   const animationRef = useRef<number>();
   const lastTimeRef = useRef(performance.now());
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Initialize renderers
+  // Check if any effect is enabled
+  const hasActiveEffect = Object.values(effects).some(e => e.enabled);
+
+  // Initialize renderers when dimensions are valid
   useEffect(() => {
     if (width <= 0 || height <= 0) return;
 
+    console.log('EffectsCanvas: Initializing renderers', { width, height });
+
     renderersRef.current = {
-      metaballs: new MetaballRenderer(defaultMetaballConfig, width, height),
-      clouds: new CloudRenderer(defaultCloudConfig, width, height),
-      godrays: new GodrayRenderer(defaultGodrayConfig, width, height),
-      water: new WaterRenderer(defaultWaterConfig, width, height),
-      fire: new FireRenderer(defaultFireConfig, width, height),
+      metaballs: new MetaballRenderer({ ...defaultMetaballConfig }, width, height),
+      clouds: new CloudRenderer({ ...defaultCloudConfig }, width, height),
+      godrays: new GodrayRenderer({ ...defaultGodrayConfig }, width, height),
+      water: new WaterRenderer({ ...defaultWaterConfig }, width, height),
+      fire: new FireRenderer({ ...defaultFireConfig }, width, height),
     };
+
+    setIsInitialized(true);
+    console.log('EffectsCanvas: Renderers initialized');
 
     return () => {
       if (animationRef.current) {
@@ -61,131 +70,118 @@ export const EffectsCanvas: React.FC<EffectsCanvasProps> = ({
     };
   }, [width, height]);
 
-  // Animation loop
+  // Animation loop - renders directly from renderer canvases
   const animate = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      animationRef.current = requestAnimationFrame(animate);
+      return;
+    }
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      animationRef.current = requestAnimationFrame(animate);
+      return;
+    }
 
     const renderers = renderersRef.current;
     const now = performance.now();
-    const dt = (now - lastTimeRef.current) / 1000;
+    const dt = Math.min((now - lastTimeRef.current) / 1000, 0.1);
     lastTimeRef.current = now;
 
     // Clear canvas
     ctx.clearRect(0, 0, width, height);
 
-    // Check if any effect is active
-    const hasActiveEffect = Object.values(effects).some(e => e.enabled);
-    
-    if (!hasActiveEffect) {
-      animationRef.current = requestAnimationFrame(animate);
-      return;
-    }
-
-    // Render each active effect layer
+    // Render water layer
     if (effects.water?.enabled && renderers.water) {
       renderers.water.update(dt);
-      const dataUrl = renderers.water.render();
-      if (dataUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.globalAlpha = effects.water.intensity;
-          ctx.drawImage(img, 0, 0, width, height);
-          ctx.globalAlpha = 1;
-        };
-        img.src = dataUrl;
+      renderers.water.renderToCanvas();
+      const srcCanvas = renderers.water.getCanvas();
+      if (srcCanvas) {
+        ctx.globalAlpha = effects.water.intensity;
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+        ctx.globalAlpha = 1;
       }
     }
 
+    // Render clouds layer
     if (effects.clouds?.enabled && renderers.clouds) {
       renderers.clouds.update(dt);
-      const dataUrl = renderers.clouds.render();
-      if (dataUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.globalAlpha = effects.clouds.intensity * 0.8;
-          ctx.drawImage(img, 0, 0, width, height);
-          ctx.globalAlpha = 1;
-        };
-        img.src = dataUrl;
+      renderers.clouds.renderToCanvas();
+      const srcCanvas = renderers.clouds.getCanvas();
+      if (srcCanvas) {
+        ctx.globalAlpha = effects.clouds.intensity * 0.8;
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+        ctx.globalAlpha = 1;
       }
     }
 
+    // Render metaballs layer
     if (effects.metaballs?.enabled && renderers.metaballs) {
       renderers.metaballs.update(dt);
-      const dataUrl = renderers.metaballs.render();
-      if (dataUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.globalAlpha = effects.metaballs.intensity;
-          ctx.drawImage(img, 0, 0, width, height);
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 1;
-        };
-        img.src = dataUrl;
+      renderers.metaballs.renderToCanvas();
+      const srcCanvas = renderers.metaballs.getCanvas();
+      if (srcCanvas) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = effects.metaballs.intensity;
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
       }
     }
 
+    // Render fire layer
     if (effects.fire?.enabled && renderers.fire) {
       renderers.fire.update(dt);
-      const dataUrl = renderers.fire.render();
-      if (dataUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.globalAlpha = effects.fire.intensity;
-          ctx.drawImage(img, 0, 0, width, height);
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 1;
-        };
-        img.src = dataUrl;
+      renderers.fire.renderToCanvas();
+      const srcCanvas = renderers.fire.getCanvas();
+      if (srcCanvas) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = effects.fire.intensity;
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
       }
     }
 
+    // Render godrays layer
     if (effects.godrays?.enabled && renderers.godrays) {
       renderers.godrays.update(dt);
-      const dataUrl = renderers.godrays.render();
-      if (dataUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.globalCompositeOperation = 'screen';
-          ctx.globalAlpha = effects.godrays.intensity * 0.6;
-          ctx.drawImage(img, 0, 0, width, height);
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 1;
-        };
-        img.src = dataUrl;
+      renderers.godrays.renderToCanvas();
+      const srcCanvas = renderers.godrays.getCanvas();
+      if (srcCanvas) {
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = effects.godrays.intensity * 0.6;
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
       }
     }
 
     animationRef.current = requestAnimationFrame(animate);
   }, [effects, width, height]);
 
-  // Start/stop animation based on active effects
+  // Start/stop animation based on active effects and initialization
   useEffect(() => {
-    const hasActiveEffect = Object.values(effects).some(e => e.enabled);
-    
-    if (hasActiveEffect) {
+    if (hasActiveEffect && isInitialized && width > 0 && height > 0) {
+      console.log('EffectsCanvas: Starting animation loop');
       lastTimeRef.current = performance.now();
       animationRef.current = requestAnimationFrame(animate);
     } else if (animationRef.current) {
+      console.log('EffectsCanvas: Stopping animation loop');
       cancelAnimationFrame(animationRef.current);
+      animationRef.current = undefined;
     }
 
     return () => {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
+        animationRef.current = undefined;
       }
     };
-  }, [effects, animate]);
+  }, [hasActiveEffect, isInitialized, animate, width, height]);
 
-  // Don't render canvas if no effects are active
-  const hasActiveEffect = Object.values(effects).some(e => e.enabled);
-  
+  // Don't render canvas if no effects are active or dimensions invalid
   if (!hasActiveEffect || width <= 0 || height <= 0) {
     return null;
   }
@@ -195,8 +191,10 @@ export const EffectsCanvas: React.FC<EffectsCanvasProps> = ({
       ref={canvasRef}
       width={width}
       height={height}
-      className="absolute inset-0 pointer-events-none z-10"
-      style={{ mixBlendMode: 'normal' }}
+      className="absolute inset-0 pointer-events-none"
+      style={{ 
+        zIndex: 15,
+      }}
     />
   );
 };

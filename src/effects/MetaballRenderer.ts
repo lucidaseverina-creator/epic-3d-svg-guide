@@ -82,8 +82,19 @@ export class MetaballRenderer {
   
   // Render to offscreen canvas and return as data URL
   render(): string {
+    this.renderToCanvas();
+    return this.canvas?.toDataURL() || '';
+  }
+  
+  // Get internal canvas for direct drawing
+  getCanvas(): HTMLCanvasElement | null {
+    return this.canvas;
+  }
+  
+  // Render to internal canvas
+  renderToCanvas(): void {
     if (!this.canvas || !this.ctx || !this.imageData) {
-      return '';
+      return;
     }
     
     const { smoothness, glowIntensity } = this.config;
@@ -135,7 +146,6 @@ export class MetaballRenderer {
     }
     
     this.ctx.putImageData(this.imageData, 0, 0);
-    return this.canvas.toDataURL();
   }
   
   private hexToRgb(hex: string): { r: number; g: number; b: number } {

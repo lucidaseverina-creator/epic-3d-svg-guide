@@ -58,7 +58,16 @@ export class GodrayRenderer {
   }
   
   render(): string {
-    if (!this.canvas || !this.ctx) return '';
+    this.renderToCanvas();
+    return this.canvas?.toDataURL() || '';
+  }
+  
+  getCanvas(): HTMLCanvasElement | null {
+    return this.canvas;
+  }
+  
+  renderToCanvas(): void {
+    if (!this.canvas || !this.ctx) return;
     
     const ctx = this.ctx;
     const { sunPosition, rayLength, decay, exposure, intensity } = this.config;
@@ -135,8 +144,6 @@ export class GodrayRenderer {
     
     ctx.fillStyle = hazeGrad;
     ctx.fillRect(0, 0, w, h);
-    
-    return this.canvas.toDataURL();
   }
   
   private hexToRgb(hex: string): { r: number; g: number; b: number } {
