@@ -1,6 +1,5 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { EngineType, ToolType, CameraPreset, RenderMode } from '@/types/engine';
-import { EffectType } from '@/effects/types';
 import { useScene } from '@/hooks/useScene';
 import { renderScene, getDefaultConfig } from '@/lib/renderer';
 
@@ -15,24 +14,10 @@ import { DrawerContainer } from '@/components/drawers/DrawerContainer';
 import { ObjectsDrawer } from '@/components/drawers/ObjectsDrawer';
 import { LightingDrawer } from '@/components/drawers/LightingDrawer';
 import { PropertiesDrawer } from '@/components/drawers/PropertiesDrawer';
-import { EffectsPanel } from '@/components/effects/EffectsPanel';
-import { EffectsCanvas } from '@/components/effects/EffectsCanvas';
 
 interface EngineLayoutProps {
   engineType?: EngineType;
 }
-
-// Default effects state
-const defaultEffects: Record<EffectType, { enabled: boolean; intensity: number }> = {
-  metaballs: { enabled: false, intensity: 0.7 },
-  fluid: { enabled: false, intensity: 0.5 },
-  water: { enabled: false, intensity: 0.6 },
-  clouds: { enabled: false, intensity: 0.5 },
-  godrays: { enabled: false, intensity: 0.5 },
-  particles: { enabled: false, intensity: 0.5 },
-  fire: { enabled: false, intensity: 0.7 },
-  smoke: { enabled: false, intensity: 0.5 },
-};
 
 export const EngineLayout: React.FC<EngineLayoutProps> = ({
   engineType: initialEngine = 'classic',
@@ -50,14 +35,14 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('perspective');
   const [renderMode, setRenderMode] = useState<RenderMode>('solid');
   const [showStats, setShowStats] = useState(false);
-  const [showEffectsPanel, setShowEffectsPanel] = useState(false);
-  
-  // Effects state
-  const [effects, setEffects] = useState(defaultEffects);
   
   // Animation state
   const [currentFrame, setCurrentFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  
+  // Animation time for 3D effects
+  const [animationTime, setAnimationTime] = useState(0);
+  const animationRef = useRef<number>();
   
   // Scene state from hook
   const {
@@ -76,16 +61,50 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
     resetCamera,
   } = useScene();
   
+  // Check if scene has any animated effects
+  const hasAnimatedEffects = useMemo(() => {
+    return scene.objects.some(obj => 
+      obj.type === 'metaballs' || obj.type === 'fluidBlob' || obj.type === 'cloudVolume'
+    );
+  }, [scene.objects]);
+  
+  // Animation loop for 3D effects
+  useEffect(() => {
+    if (!hasAnimatedEffects) {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      return;
+    }
+    
+    let lastTime = performance.now();
+    
+    const animate = (time: number) => {
+      const dt = (time - lastTime) / 1000;
+      lastTime = time;
+      setAnimationTime(prev => prev + dt);
+      animationRef.current = requestAnimationFrame(animate);
+    };
+    
+    animationRef.current = requestAnimationFrame(animate);
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [hasAnimatedEffects]);
+  
   // Render config
   const config = useMemo(() => getDefaultConfig(), []);
 
   // Actual viewport size (reported by <Viewport />)
   const [viewportSize, setViewportSize] = useState({ width: 1200, height: 700 });
 
-  // Render the scene
+  // Render the scene with animation time
   const projectedFaces = useMemo(() => {
-    return renderScene(scene, config, viewportSize.width, viewportSize.height);
-  }, [scene, config, viewportSize]);
+    return renderScene(scene, config, viewportSize.width, viewportSize.height, animationTime);
+  }, [scene, config, viewportSize, animationTime]);
   
   // Handle drawer toggle
   const handleDrawerToggle = useCallback((drawerId: string) => {
@@ -107,27 +126,6 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
       updateObject(id, { locked: !obj.locked });
     }
   }, [scene.objects, updateObject]);
-  
-  // Effects handlers
-  const handleToggleEffect = useCallback((effectType: EffectType) => {
-    setEffects(prev => ({
-      ...prev,
-      [effectType]: {
-        ...prev[effectType],
-        enabled: !prev[effectType].enabled,
-      },
-    }));
-  }, []);
-  
-  const handleEffectIntensity = useCallback((effectType: EffectType, intensity: number) => {
-    setEffects(prev => ({
-      ...prev,
-      [effectType]: {
-        ...prev[effectType],
-        intensity,
-      },
-    }));
-  }, []);
   
   // Render drawer content
   const renderDrawerContent = () => {
@@ -153,11 +151,9 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
         );
       case 'effects':
         return (
-          <EffectsPanel
-            effects={effects}
-            onToggleEffect={handleToggleEffect}
-            onIntensityChange={handleEffectIntensity}
-          />
+          <div className="p-4 text-center text-muted-foreground text-sm">
+            3D SDF Effects coming soon - will add metaballs, fluid, clouds as scene objects
+          </div>
         );
       case 'camera':
       case 'rendering':
@@ -227,14 +223,6 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
               onObjectTransform={applyTransform}
             />
             
-            {/* Effects Canvas Overlay */}
-            <EffectsCanvas
-              width={viewportSize.width}
-              height={viewportSize.height}
-              effects={effects}
-              lightingMode={scene.lightingMode}
-            />
-            
             {/* Properties panel when object selected */}
             {selectedObject && activeDrawer !== 'objects' && (
               <div className="absolute top-4 right-4 w-72 bg-panel/95 backdrop-blur-xl border border-border/50 rounded-lg shadow-panel overflow-hidden z-20">
@@ -279,7 +267,7 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
             onRenderModeChange={setRenderMode}
             showStats={showStats}
             onToggleStats={() => setShowStats(!showStats)}
-            showEffects={Object.values(effects).some(e => e.enabled)}
+            showEffects={false}
             onToggleEffects={() => handleDrawerToggle('effects')}
             objectCount={scene.objects.length}
             selectedObjectName={selectedObject?.name}

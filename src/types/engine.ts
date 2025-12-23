@@ -63,7 +63,7 @@ export interface ProjectedFace extends Face {
 }
 
 // Object Types
-export type PrimitiveType = 'box' | 'sphere' | 'cylinder' | 'torus' | 'cone' | 'pyramid';
+export type PrimitiveType = 'box' | 'sphere' | 'cylinder' | 'torus' | 'cone' | 'pyramid' | 'metaballs' | 'fluidBlob' | 'cloudVolume';
 
 export interface SceneObject {
   id: string;
