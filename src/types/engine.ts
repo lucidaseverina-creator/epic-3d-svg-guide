@@ -63,7 +63,16 @@ export interface ProjectedFace extends Face {
 }
 
 // Object Types
-export type PrimitiveType = 'box' | 'sphere' | 'cylinder' | 'torus' | 'cone' | 'pyramid' | 'metaballs' | 'fluidBlob' | 'cloudVolume';
+export type PrimitiveType = 'box' | 'sphere' | 'cylinder' | 'torus' | 'cone' | 'pyramid' | 'metaballs' | 'fluidBlob' | 'cloudVolume' | 'godRays' | 'fire' | 'smoke';
+
+// Effect parameters for special primitives
+export interface EffectParams {
+  blobCount?: number;      // For metaballs
+  particleCount?: number;  // For fluid, fire, smoke
+  puffCount?: number;      // For cloud
+  rayCount?: number;       // For god rays
+  intensity?: number;      // General intensity
+}
 
 export interface SceneObject {
   id: string;
@@ -75,6 +84,7 @@ export interface SceneObject {
   material: Material;
   visible: boolean;
   locked: boolean;
+  effectParams?: EffectParams;
 }
 
 // SDF Object Types

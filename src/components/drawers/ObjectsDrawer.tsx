@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Circle, Cylinder, Hexagon, Triangle, Donut, Trash2, Eye, EyeOff, Lock, Unlock, Droplets, Cloud, Flame } from 'lucide-react';
+import { Box, Circle, Cylinder, Hexagon, Triangle, Donut, Trash2, Eye, EyeOff, Lock, Unlock, Droplets, Cloud, Flame, Sun, Wind } from 'lucide-react';
 import { SceneObject, PrimitiveType } from '@/types/engine';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -27,6 +27,9 @@ const effectButtons: { type: PrimitiveType; icon: React.ReactNode; label: string
   { type: 'metaballs', icon: <Flame className="w-4 h-4 text-orange-500" />, label: 'Metaballs' },
   { type: 'fluidBlob', icon: <Droplets className="w-4 h-4 text-blue-400" />, label: 'Fluid' },
   { type: 'cloudVolume', icon: <Cloud className="w-4 h-4 text-gray-300" />, label: 'Cloud' },
+  { type: 'godRays', icon: <Sun className="w-4 h-4 text-yellow-400" />, label: 'God Rays' },
+  { type: 'fire', icon: <Flame className="w-4 h-4 text-red-500" />, label: 'Fire' },
+  { type: 'smoke', icon: <Wind className="w-4 h-4 text-gray-500" />, label: 'Smoke' },
 ];
 
 export const ObjectsDrawer: React.FC<ObjectsDrawerProps> = ({
