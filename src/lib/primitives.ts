@@ -1,6 +1,12 @@
 import { Vector3, Face, PrimitiveType } from '@/types/engine';
-
-// Generate box faces
+import { 
+  generateSDFMetaballs, 
+  generateSDFFluid, 
+  generateSDFCloud,
+  generateSDFGodRays,
+  generateSDFFire,
+  generateSDFSmoke
+} from './sdf';
 export const generateBox = (size: number = 50): Face[] => {
   const s = size / 2;
   
@@ -633,17 +639,17 @@ export const generatePrimitiveFaces = (
     case 'pyramid':
       return generatePyramid(size, size * 1.4);
     case 'metaballs':
-      return generateMetaballs(size, effectParams?.blobCount ?? 5, time);
+      return generateSDFMetaballs(size, effectParams?.blobCount ?? 5, time);
     case 'fluidBlob':
-      return generateFluidBlob(size, effectParams?.particleCount ?? 8, time);
+      return generateSDFFluid(size, effectParams?.particleCount ?? 8, time);
     case 'cloudVolume':
-      return generateCloudVolume(size, effectParams?.puffCount ?? 6, time);
+      return generateSDFCloud(size, effectParams?.puffCount ?? 6, time);
     case 'godRays':
-      return generateGodRays(size, effectParams?.rayCount ?? 8, time);
+      return generateSDFGodRays(size, effectParams?.rayCount ?? 8, time);
     case 'fire':
-      return generateFire(size, effectParams?.particleCount ?? 12, time);
+      return generateSDFFire(size, effectParams?.particleCount ?? 12, time);
     case 'smoke':
-      return generateSmoke(size, effectParams?.particleCount ?? 10, time);
+      return generateSDFSmoke(size, effectParams?.particleCount ?? 10, time);
     default:
       return generateBox(size);
   }
