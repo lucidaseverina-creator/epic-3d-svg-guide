@@ -110,7 +110,7 @@ export const renderScene = (
     if (!obj.visible) continue;
     
     // Generate base faces for this primitive type (pass time for animated effects)
-    const baseFaces = generatePrimitiveFaces(obj.type, 50, time);
+    const baseFaces = generatePrimitiveFaces(obj.type, 50, time, obj.effectParams);
     
     for (const face of baseFaces) {
       // Transform vertices by object transform

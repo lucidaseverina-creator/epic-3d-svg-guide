@@ -492,8 +492,133 @@ export const generateCloudVolume = (size: number = 80, puffCount: number = 6, ti
   return faces;
 };
 
-// Generate faces for a primitive type
-export const generatePrimitiveFaces = (type: PrimitiveType, size: number = 50, time: number = 0): Face[] => {
+// Generate 3D god rays as volumetric light shafts
+export const generateGodRays = (size: number = 100, rayCount: number = 8, time: number = 0): Face[] => {
+  const faces: Face[] = [];
+  
+  for (let i = 0; i < rayCount; i++) {
+    const angle = (i / rayCount) * Math.PI * 2 + time * 0.1;
+    const rayWidth = size * 0.08 + Math.sin(time * 2 + i) * size * 0.02;
+    const rayLength = size * 1.5;
+    
+    // Each ray is a tapered quad extending from center
+    const baseX = Math.cos(angle) * size * 0.1;
+    const baseZ = Math.sin(angle) * size * 0.1;
+    const tipX = Math.cos(angle) * rayLength;
+    const tipZ = Math.sin(angle) * rayLength;
+    
+    const perpX = -Math.sin(angle) * rayWidth;
+    const perpZ = Math.cos(angle) * rayWidth;
+    
+    const opacity = 30 + Math.sin(time * 3 + i * 0.7) * 15;
+    
+    faces.push({
+      verts: [
+        { x: baseX - perpX * 0.3, y: size * 0.8, z: baseZ - perpZ * 0.3 },
+        { x: baseX + perpX * 0.3, y: size * 0.8, z: baseZ + perpZ * 0.3 },
+        { x: tipX + perpX, y: -size * 0.5, z: tipZ + perpZ },
+        { x: tipX - perpX, y: -size * 0.5, z: tipZ - perpZ },
+      ],
+      color: `hsla(45, 100%, 85%, ${opacity}%)`,
+    });
+  }
+  
+  return faces;
+};
+
+// Generate 3D fire particles as animated mesh
+export const generateFire = (size: number = 60, particleCount: number = 12, time: number = 0): Face[] => {
+  const faces: Face[] = [];
+  
+  for (let i = 0; i < particleCount; i++) {
+    const phase = time * 3 + i * 0.5;
+    const lifePhase = (phase % 2) / 2; // 0 to 1 lifecycle
+    
+    const baseAngle = (i / particleCount) * Math.PI * 2;
+    const wobble = Math.sin(phase * 2) * size * 0.1;
+    
+    const px = Math.cos(baseAngle) * size * 0.2 + wobble;
+    const py = lifePhase * size * 0.8 - size * 0.3;
+    const pz = Math.sin(baseAngle) * size * 0.2;
+    
+    const particleSize = size * 0.15 * (1 - lifePhase * 0.7);
+    
+    // Color transitions from yellow to orange to red as it rises
+    const hue = 60 - lifePhase * 50;
+    const lightness = 60 - lifePhase * 20;
+    
+    // Generate tetrahedron-like flame particle
+    const segments = 6;
+    for (let j = 0; j < segments; j++) {
+      const a1 = (j / segments) * Math.PI * 2;
+      const a2 = ((j + 1) / segments) * Math.PI * 2;
+      
+      faces.push({
+        verts: [
+          { x: px, y: py + particleSize, z: pz },
+          { x: px + Math.cos(a2) * particleSize * 0.6, y: py - particleSize * 0.3, z: pz + Math.sin(a2) * particleSize * 0.6 },
+          { x: px + Math.cos(a1) * particleSize * 0.6, y: py - particleSize * 0.3, z: pz + Math.sin(a1) * particleSize * 0.6 },
+        ],
+        color: `hsl(${hue}, 100%, ${lightness}%)`,
+      });
+    }
+  }
+  
+  return faces;
+};
+
+// Generate 3D smoke as soft billowing mesh
+export const generateSmoke = (size: number = 70, particleCount: number = 10, time: number = 0): Face[] => {
+  const faces: Face[] = [];
+  
+  for (let i = 0; i < particleCount; i++) {
+    const phase = time * 0.8 + i * 0.8;
+    const lifePhase = (phase % 3) / 3;
+    
+    const spiralAngle = lifePhase * Math.PI * 2 + i;
+    const spreadRadius = lifePhase * size * 0.4;
+    
+    const px = Math.cos(spiralAngle) * spreadRadius;
+    const py = lifePhase * size - size * 0.2;
+    const pz = Math.sin(spiralAngle) * spreadRadius;
+    
+    const particleSize = size * 0.2 * (0.5 + lifePhase * 0.5);
+    const opacity = 40 - lifePhase * 30;
+    
+    // Generate spheroid smoke puff
+    const segments = 6;
+    for (let lat = 0; lat < segments / 2; lat++) {
+      const theta1 = (lat / (segments / 2)) * Math.PI;
+      const theta2 = ((lat + 1) / (segments / 2)) * Math.PI;
+      
+      for (let lon = 0; lon < segments; lon++) {
+        const phi1 = (lon / segments) * Math.PI * 2;
+        const phi2 = ((lon + 1) / segments) * Math.PI * 2;
+        
+        const getVert = (theta: number, phi: number) => ({
+          x: px + particleSize * Math.sin(theta) * Math.cos(phi),
+          y: py + particleSize * Math.cos(theta) * 0.7,
+          z: pz + particleSize * Math.sin(theta) * Math.sin(phi),
+        });
+        
+        faces.push({
+          verts: [getVert(theta1, phi1), getVert(theta1, phi2), getVert(theta2, phi2), getVert(theta2, phi1)],
+          color: `hsla(0, 0%, 60%, ${opacity}%)`,
+        });
+      }
+    }
+  }
+  
+  return faces;
+};
+
+// Generate faces for a primitive type with effect params
+export const generatePrimitiveFaces = (
+  type: PrimitiveType, 
+  size: number = 50, 
+  time: number = 0,
+  effectParams?: { blobCount?: number; particleCount?: number; puffCount?: number; rayCount?: number }
+): Face[] => {
   switch (type) {
     case 'box':
       return generateBox(size);
@@ -508,11 +633,17 @@ export const generatePrimitiveFaces = (type: PrimitiveType, size: number = 50, t
     case 'pyramid':
       return generatePyramid(size, size * 1.4);
     case 'metaballs':
-      return generateMetaballs(size, 5, time);
+      return generateMetaballs(size, effectParams?.blobCount ?? 5, time);
     case 'fluidBlob':
-      return generateFluidBlob(size, 8, time);
+      return generateFluidBlob(size, effectParams?.particleCount ?? 8, time);
     case 'cloudVolume':
-      return generateCloudVolume(size, 6, time);
+      return generateCloudVolume(size, effectParams?.puffCount ?? 6, time);
+    case 'godRays':
+      return generateGodRays(size, effectParams?.rayCount ?? 8, time);
+    case 'fire':
+      return generateFire(size, effectParams?.particleCount ?? 12, time);
+    case 'smoke':
+      return generateSmoke(size, effectParams?.particleCount ?? 10, time);
     default:
       return generateBox(size);
   }

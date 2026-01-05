@@ -1,7 +1,8 @@
 import React from 'react';
-import { SceneObject, Vector3 } from '@/types/engine';
+import { SceneObject, Vector3, EffectParams } from '@/types/engine';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
 
 interface PropertiesDrawerProps {
   object: SceneObject | null;
@@ -181,6 +182,105 @@ export const PropertiesDrawer: React.FC<PropertiesDrawerProps> = ({
           />
         </div>
       </div>
+      
+      {/* Effect Parameters - only for effect types */}
+      {['metaballs', 'fluidBlob', 'cloudVolume', 'godRays', 'fire', 'smoke'].includes(object.type) && (
+        <div className="space-y-4">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider">
+            Effect Parameters
+          </div>
+          
+          {object.type === 'metaballs' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Blob Count</Label>
+                <span className="text-xs text-muted-foreground">{object.effectParams?.blobCount ?? 5}</span>
+              </div>
+              <Slider
+                value={[object.effectParams?.blobCount ?? 5]}
+                min={2}
+                max={12}
+                step={1}
+                onValueChange={([val]) => onUpdate(object.id, { 
+                  effectParams: { ...object.effectParams, blobCount: val }
+                })}
+              />
+            </div>
+          )}
+          
+          {object.type === 'fluidBlob' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Particle Count</Label>
+                <span className="text-xs text-muted-foreground">{object.effectParams?.particleCount ?? 8}</span>
+              </div>
+              <Slider
+                value={[object.effectParams?.particleCount ?? 8]}
+                min={3}
+                max={20}
+                step={1}
+                onValueChange={([val]) => onUpdate(object.id, { 
+                  effectParams: { ...object.effectParams, particleCount: val }
+                })}
+              />
+            </div>
+          )}
+          
+          {object.type === 'cloudVolume' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Puff Density</Label>
+                <span className="text-xs text-muted-foreground">{object.effectParams?.puffCount ?? 6}</span>
+              </div>
+              <Slider
+                value={[object.effectParams?.puffCount ?? 6]}
+                min={2}
+                max={15}
+                step={1}
+                onValueChange={([val]) => onUpdate(object.id, { 
+                  effectParams: { ...object.effectParams, puffCount: val }
+                })}
+              />
+            </div>
+          )}
+          
+          {object.type === 'godRays' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Ray Count</Label>
+                <span className="text-xs text-muted-foreground">{object.effectParams?.rayCount ?? 8}</span>
+              </div>
+              <Slider
+                value={[object.effectParams?.rayCount ?? 8]}
+                min={4}
+                max={16}
+                step={1}
+                onValueChange={([val]) => onUpdate(object.id, { 
+                  effectParams: { ...object.effectParams, rayCount: val }
+                })}
+              />
+            </div>
+          )}
+          
+          {(object.type === 'fire' || object.type === 'smoke') && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Particle Count</Label>
+                <span className="text-xs text-muted-foreground">{object.effectParams?.particleCount ?? (object.type === 'fire' ? 12 : 10)}</span>
+              </div>
+              <Slider
+                value={[object.effectParams?.particleCount ?? (object.type === 'fire' ? 12 : 10)]}
+                min={4}
+                max={25}
+                step={1}
+                onValueChange={([val]) => onUpdate(object.id, { 
+                  effectParams: { ...object.effectParams, particleCount: val }
+                })}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
