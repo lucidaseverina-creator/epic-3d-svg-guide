@@ -9,8 +9,9 @@ import { ParametricProperties } from './ParametricProperties';
 import { Viewport } from '@/components/engine/Viewport';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ViewAxis, Face, ProjectedFace } from '@/types/parametric';
-import { rotateEuler, project, add, calculateNormal, calculateLighting } from '@/lib/math';
+import { ViewAxis } from '@/types/parametric';
+import { Face, ProjectedFace } from '@/types/engine';
+import { rotateEuler, project, add, calculateNormal, dot, normalize } from '@/lib/math';
 import { Box, FileDown, Plus, RotateCcw, Eye, Grid3X3 } from 'lucide-react';
 
 export const ParametricLayout: React.FC = () => {
@@ -43,10 +44,7 @@ export const ParametricLayout: React.FC = () => {
     const fov = 800;
     const scale = spec?.baseForm.L ? 80 / spec.baseForm.L : 20;
     
-    const lights = [
-      { type: 'ambient' as const, color: '#ffffff', intensity: 0.3 },
-      { type: 'directional' as const, color: '#00ffff', intensity: 0.7, direction: { x: 0.5, y: 1, z: 0.5 } },
-    ];
+    const lightDir = normalize({ x: 0.5, y: 1, z: 0.5 });
     
     return meshFaces.map((face, i) => {
       // Scale vertices
@@ -74,8 +72,8 @@ export const ParametricLayout: React.FC = () => {
       };
       
       const normal = face.normal || calculateNormal(rotatedVerts);
-      const lightIntensity = calculateLighting(normal, lights);
-      
+      const diffuse = Math.max(0, dot(normal, lightDir));
+      const lightIntensity = 0.3 + 0.7 * diffuse;
       return {
         verts: scaledVerts,
         projectedVerts,
