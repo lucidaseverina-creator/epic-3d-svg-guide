@@ -1,18 +1,19 @@
 // ============================================
-// PARAMETRIC ENGINE LAYOUT - Main UI
+// PARAMETRIC ENGINE LAYOUT - Main UI with Boolean Panel
 // ============================================
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParametricEngine } from '@/hooks/useParametricEngine';
 import { CurveEditor } from './CurveEditor';
 import { ParametricProperties } from './ParametricProperties';
+import { BooleanPanel, SDFNode, SDFPrimitiveType, BooleanOp } from './BooleanPanel';
 import { Viewport } from '@/components/engine/Viewport';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ViewAxis } from '@/types/parametric';
+import { ViewAxis, FeatureNodeContract } from '@/types/parametric';
 import { Face, ProjectedFace } from '@/types/engine';
 import { rotateEuler, project, add, calculateNormal, dot, normalize } from '@/lib/math';
-import { Box, FileDown, Plus, RotateCcw, Eye, Grid3X3 } from 'lucide-react';
+import { Box, FileDown, Plus, RotateCcw, Eye, Grid3X3, Layers, Settings } from 'lucide-react';
 
 export const ParametricLayout: React.FC = () => {
   const {
@@ -32,8 +33,105 @@ export const ParametricLayout: React.FC = () => {
   }, [initializeWithDefault]);
   
   // Camera state
-  const [cameraRotation, setCameraRotation] = React.useState({ x: 0.3, y: -0.4, z: 0 });
-  const [cameraPosition, setCameraPosition] = React.useState({ x: 0, y: 0, z: 400 });
+  const [cameraRotation, setCameraRotation] = useState({ x: 0.3, y: -0.4, z: 0 });
+  const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0, z: 400 });
+  
+  // Active panel
+  const [activePanel, setActivePanel] = useState<'parametric' | 'boolean'>('parametric');
+  
+  // SDF Boolean nodes state
+  const [sdfNodes, setSdfNodes] = useState<SDFNode[]>([]);
+  const [selectedSdfNodeId, setSelectedSdfNodeId] = useState<string | null>(null);
+  
+  // SDF Node handlers
+  const handleAddSdfNode = useCallback((type: SDFPrimitiveType) => {
+    const id = `sdf_${Date.now()}`;
+    const newNode: SDFNode = {
+      id,
+      name: `${type.charAt(0).toUpperCase() + type.slice(1)} ${sdfNodes.length + 1}`,
+      type,
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      visible: true,
+      locked: false,
+      primitiveParams: {
+        radius: type === 'sphere' ? 1 : 0.5,
+        majorRadius: type === 'torus' ? 1 : undefined,
+        minorRadius: type === 'torus' ? 0.3 : undefined,
+        height: type === 'cylinder' || type === 'capsule' ? 2 : undefined,
+      },
+    };
+    setSdfNodes(prev => [...prev, newNode]);
+    setSelectedSdfNodeId(id);
+  }, [sdfNodes.length]);
+  
+  const handleUpdateSdfNode = useCallback((id: string, updates: Partial<SDFNode>) => {
+    setSdfNodes(prev => prev.map(node => 
+      node.id === id ? { ...node, ...updates } : node
+    ));
+  }, []);
+  
+  const handleDeleteSdfNode = useCallback((id: string) => {
+    setSdfNodes(prev => prev.filter(node => node.id !== id));
+    if (selectedSdfNodeId === id) {
+      setSelectedSdfNodeId(null);
+    }
+  }, [selectedSdfNodeId]);
+  
+  const handleDuplicateSdfNode = useCallback((id: string) => {
+    const node = sdfNodes.find(n => n.id === id);
+    if (!node) return;
+    
+    const newId = `sdf_${Date.now()}`;
+    const newNode: SDFNode = {
+      ...node,
+      id: newId,
+      name: `${node.name} Copy`,
+      position: {
+        x: node.position.x + 0.5,
+        y: node.position.y,
+        z: node.position.z,
+      },
+    };
+    setSdfNodes(prev => [...prev, newNode]);
+    setSelectedSdfNodeId(newId);
+  }, [sdfNodes]);
+  
+  const handleCreateBoolean = useCallback((operation: BooleanOp, operandA: string, operandB: string) => {
+    const nodeA = sdfNodes.find(n => n.id === operandA);
+    const nodeB = sdfNodes.find(n => n.id === operandB);
+    if (!nodeA || !nodeB) return;
+    
+    const id = `bool_${Date.now()}`;
+    const newNode: SDFNode = {
+      id,
+      name: `${nodeA.name} ${operation} ${nodeB.name}`,
+      type: 'boolean',
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      visible: true,
+      locked: false,
+      booleanParams: {
+        operation,
+        operandA,
+        operandB,
+        smoothness: operation.startsWith('smooth') ? 0.5 : 0,
+      },
+    };
+    setSdfNodes(prev => [...prev, newNode]);
+    setSelectedSdfNodeId(id);
+  }, [sdfNodes]);
+  
+  // Feature handlers
+  const handleAddFeature = useCallback((feature: FeatureNodeContract) => {
+    dispatch({ type: 'ADD_FEATURE', feature });
+  }, [dispatch]);
+  
+  const handleDeleteFeature = useCallback((featureId: string) => {
+    dispatch({ type: 'REMOVE_FEATURE', featureId });
+  }, [dispatch]);
   
   // Project mesh faces for viewport
   const projectedFaces = React.useMemo((): ProjectedFace[] => {
@@ -86,8 +184,8 @@ export const ParametricLayout: React.FC = () => {
   
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Left Panel - Properties */}
-      <div className="w-72 border-r border-border/30 bg-panel/50 flex flex-col">
+      {/* Left Panel - Mode Tabs */}
+      <div className="w-80 border-r border-border/30 bg-panel/50 flex flex-col">
         <div className="p-3 border-b border-border/30 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Box className="w-5 h-5 text-primary" />
@@ -98,15 +196,61 @@ export const ParametricLayout: React.FC = () => {
           </Button>
         </div>
         
-        <ParametricProperties
-          spec={spec}
-          selectedFeatureId={state.selectedFeatureId}
-          onUpdateLength={updateLength}
-          onUpdateResolution={updateResolution}
-          onToggleFeature={toggleFeature}
-          onSelectFeature={(id) => dispatch({ type: 'SELECT_FEATURE', featureId: id })}
-          onUpdateFeature={(id, updates) => dispatch({ type: 'UPDATE_FEATURE', featureId: id, updates })}
-        />
+        {/* Panel Mode Tabs */}
+        <div className="border-b border-border/30">
+          <div className="flex">
+            <button
+              className={`flex-1 p-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 ${
+                activePanel === 'parametric' 
+                  ? 'border-primary text-primary bg-primary/10' 
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setActivePanel('parametric')}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Parametric
+            </button>
+            <button
+              className={`flex-1 p-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 ${
+                activePanel === 'boolean' 
+                  ? 'border-primary text-primary bg-primary/10' 
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setActivePanel('boolean')}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Boolean SDF
+            </button>
+          </div>
+        </div>
+        
+        {/* Panel Content */}
+        <div className="flex-1 overflow-hidden">
+          {activePanel === 'parametric' ? (
+            <ParametricProperties
+              spec={spec}
+              selectedFeatureId={state.selectedFeatureId}
+              onUpdateLength={updateLength}
+              onUpdateResolution={updateResolution}
+              onToggleFeature={toggleFeature}
+              onSelectFeature={(id) => dispatch({ type: 'SELECT_FEATURE', featureId: id })}
+              onUpdateFeature={(id, updates) => dispatch({ type: 'UPDATE_FEATURE', featureId: id, updates })}
+              onAddFeature={handleAddFeature}
+              onDeleteFeature={handleDeleteFeature}
+            />
+          ) : (
+            <BooleanPanel
+              nodes={sdfNodes}
+              selectedNodeId={selectedSdfNodeId}
+              onSelectNode={setSelectedSdfNodeId}
+              onAddNode={handleAddSdfNode}
+              onUpdateNode={handleUpdateSdfNode}
+              onDeleteNode={handleDeleteSdfNode}
+              onDuplicateNode={handleDuplicateSdfNode}
+              onCreateBoolean={handleCreateBoolean}
+            />
+          )}
+        </div>
       </div>
       
       {/* Main Content */}
@@ -114,6 +258,11 @@ export const ParametricLayout: React.FC = () => {
         {/* Top Bar */}
         <div className="h-12 border-b border-border/30 bg-panel/30 flex items-center px-4 gap-4">
           <span className="text-sm font-medium text-primary">{spec?.name || 'Untitled'}</span>
+          <div className="text-xs text-muted-foreground">
+            {activePanel === 'boolean' && sdfNodes.length > 0 && (
+              <span>{sdfNodes.length} SDF objects</span>
+            )}
+          </div>
           <div className="flex-1" />
           <Button variant="outline" size="sm" className="h-7 gap-1">
             <FileDown className="w-3.5 h-3.5" />
@@ -139,6 +288,7 @@ export const ParametricLayout: React.FC = () => {
             <div className="absolute bottom-4 left-4 bg-panel/80 backdrop-blur-sm rounded-md p-2 text-xs font-mono text-primary">
               <div>Faces: {projectedFaces.length}</div>
               <div>L: {spec?.baseForm.L.toFixed(1)}m</div>
+              {activePanel === 'boolean' && <div>SDF Nodes: {sdfNodes.length}</div>}
             </div>
           </div>
           
