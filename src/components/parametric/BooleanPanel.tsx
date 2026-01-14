@@ -40,6 +40,13 @@ export type SDFPrimitiveType = 'sphere' | 'box' | 'torus' | 'cylinder' | 'capsul
 // Boolean operation types
 export type BooleanOp = 'union' | 'subtract' | 'intersect' | 'smoothUnion' | 'smoothSubtract' | 'smoothIntersect';
 
+// Material definition for SDF nodes
+export interface SDFMaterial {
+  color: string;
+  roughness: number;
+  metallic: number;
+}
+
 // SDF Node definition
 export interface SDFNode {
   id: string;
@@ -50,6 +57,7 @@ export interface SDFNode {
   rotation: { x: number; y: number; z: number };
   visible: boolean;
   locked: boolean;
+  material: SDFMaterial;
   // For primitives
   primitiveParams?: {
     radius?: number;
@@ -93,6 +101,71 @@ const BOOLEAN_OP_LABELS: Record<BooleanOp, string> = {
   smoothUnion: 'Smooth Union',
   smoothSubtract: 'Smooth Subtract',
   smoothIntersect: 'Smooth Intersect',
+};
+
+// Color conversion helpers
+const hslToHex = (hsl: string): string => {
+  const match = hsl.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
+  if (!match) return '#888888';
+  
+  const h = parseInt(match[1]) / 360;
+  const s = parseInt(match[2]) / 100;
+  const l = parseInt(match[3]) / 100;
+  
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  
+  let r, g, b;
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  
+  const toHex = (x: number) => {
+    const hex = Math.round(x * 255).toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  };
+  
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+};
+
+const hexToHsl = (hex: string): string => {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!result) return 'hsl(0, 0%, 50%)';
+  
+  const r = parseInt(result[1], 16) / 255;
+  const g = parseInt(result[2], 16) / 255;
+  const b = parseInt(result[3], 16) / 255;
+  
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  
+  return `hsl(${Math.round(h * 360)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 };
 
 export const BooleanPanel: React.FC<BooleanPanelProps> = ({
@@ -290,6 +363,12 @@ export const BooleanPanel: React.FC<BooleanPanelProps> = ({
                 onClick={() => onSelectNode(node.id)}
               >
                 <GripVertical className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                
+                {/* Color swatch */}
+                <div 
+                  className="w-4 h-4 rounded-sm border border-border/50 flex-shrink-0"
+                  style={{ backgroundColor: node.material.color }}
+                />
                 
                 <button
                   className="p-1 hover:bg-secondary rounded"
@@ -528,6 +607,84 @@ export const BooleanPanel: React.FC<BooleanPanelProps> = ({
                     </div>
                   </div>
                 )}
+                
+                {/* Material / Color */}
+                <div className="space-y-2 pt-2 border-t border-border/30">
+                  <Label className="text-xs text-muted-foreground">Material</Label>
+                  
+                  {/* Color Picker */}
+                  <div>
+                    <Label className="text-[10px] text-muted-foreground">Color</Label>
+                    <div className="flex gap-2 mt-1 items-center">
+                      <input
+                        type="color"
+                        value={hslToHex(selectedNode.material.color)}
+                        onChange={(e) => onUpdateNode(selectedNode.id, {
+                          material: { ...selectedNode.material, color: hexToHsl(e.target.value) }
+                        })}
+                        className="w-10 h-8 rounded border border-border cursor-pointer"
+                      />
+                      <div className="flex-1 grid grid-cols-6 gap-1">
+                        {[
+                          'hsl(200, 70%, 55%)', // Blue
+                          'hsl(340, 70%, 55%)', // Pink
+                          'hsl(120, 50%, 50%)', // Green
+                          'hsl(45, 80%, 55%)',  // Orange
+                          'hsl(280, 60%, 55%)', // Purple
+                          'hsl(180, 60%, 50%)', // Cyan
+                          'hsl(0, 70%, 55%)',   // Red
+                          'hsl(60, 70%, 50%)',  // Yellow
+                          'hsl(30, 70%, 50%)',  // Brown
+                          'hsl(240, 50%, 55%)', // Indigo
+                          'hsl(0, 0%, 60%)',    // Gray
+                          'hsl(0, 0%, 30%)',    // Dark Gray
+                        ].map(color => (
+                          <button
+                            key={color}
+                            className={cn(
+                              "w-5 h-5 rounded-sm border transition-transform hover:scale-110",
+                              selectedNode.material.color === color ? "border-foreground scale-110" : "border-border/50"
+                            )}
+                            style={{ backgroundColor: color }}
+                            onClick={() => onUpdateNode(selectedNode.id, {
+                              material: { ...selectedNode.material, color }
+                            })}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Roughness */}
+                  <div>
+                    <Label className="text-[10px] text-muted-foreground">Roughness</Label>
+                    <Slider
+                      value={[selectedNode.material.roughness]}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onValueChange={([v]) => onUpdateNode(selectedNode.id, {
+                        material: { ...selectedNode.material, roughness: v }
+                      })}
+                      className="mt-1"
+                    />
+                  </div>
+                  
+                  {/* Metallic */}
+                  <div>
+                    <Label className="text-[10px] text-muted-foreground">Metallic</Label>
+                    <Slider
+                      value={[selectedNode.material.metallic]}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onValueChange={([v]) => onUpdateNode(selectedNode.id, {
+                        material: { ...selectedNode.material, metallic: v }
+                      })}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>

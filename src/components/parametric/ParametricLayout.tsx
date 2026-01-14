@@ -44,9 +44,20 @@ export const ParametricLayout: React.FC = () => {
   const [sdfNodes, setSdfNodes] = useState<SDFNode[]>([]);
   const [selectedSdfNodeId, setSelectedSdfNodeId] = useState<string | null>(null);
   
+  // Default colors for primitives
+  const PRIMITIVE_COLORS = [
+    'hsl(200, 70%, 55%)', // Blue
+    'hsl(340, 70%, 55%)', // Pink
+    'hsl(120, 50%, 50%)', // Green
+    'hsl(45, 80%, 55%)',  // Orange
+    'hsl(280, 60%, 55%)', // Purple
+    'hsl(180, 60%, 50%)', // Cyan
+  ];
+  
   // SDF Node handlers
   const handleAddSdfNode = useCallback((type: SDFPrimitiveType) => {
     const id = `sdf_${Date.now()}`;
+    const colorIndex = sdfNodes.length % PRIMITIVE_COLORS.length;
     const newNode: SDFNode = {
       id,
       name: `${type.charAt(0).toUpperCase() + type.slice(1)} ${sdfNodes.length + 1}`,
@@ -56,6 +67,11 @@ export const ParametricLayout: React.FC = () => {
       rotation: { x: 0, y: 0, z: 0 },
       visible: true,
       locked: false,
+      material: {
+        color: PRIMITIVE_COLORS[colorIndex],
+        roughness: 0.5,
+        metallic: 0,
+      },
       primitiveParams: {
         radius: type === 'sphere' ? 1 : 0.5,
         majorRadius: type === 'torus' ? 1 : undefined,
@@ -114,6 +130,11 @@ export const ParametricLayout: React.FC = () => {
       rotation: { x: 0, y: 0, z: 0 },
       visible: true,
       locked: false,
+      material: {
+        color: nodeA.material.color, // Inherit color from first operand
+        roughness: 0.5,
+        metallic: 0,
+      },
       booleanParams: {
         operation,
         operandA,
@@ -142,7 +163,6 @@ export const ParametricLayout: React.FC = () => {
       boundSize: 8,
       minCellSize: 0.12,
       maxDepth: 6,
-      color: 'hsl(210, 80%, 55%)',
     });
   }, [activePanel, sdfNodes]);
   
