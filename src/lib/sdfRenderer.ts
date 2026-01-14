@@ -102,32 +102,41 @@ const evaluatePrimitive = (
   }
 };
 
+// Build color map for primitives - tracks which primitive each point is closest to
+type SDFWithColor = {
+  sdf: (p: Vector3) => number;
+  color: string;
+};
+
 // Build the combined SDF function from all nodes
 const buildSceneSDF = (
   nodes: SDFNode[],
   nodesMap: Map<string, SDFNode>
-): (p: Vector3) => number => {
+): {
+  sceneSDF: (p: Vector3) => number;
+  getColor: (p: Vector3) => string;
+} => {
   // Create a memoized SDF evaluator for each node
-  const nodeSDFs = new Map<string, (p: Vector3) => number>();
+  const nodeSDFs = new Map<string, SDFWithColor>();
   
-  const getNodeSDF = (id: string): ((p: Vector3) => number) => {
+  const getNodeSDF = (id: string): SDFWithColor => {
     if (nodeSDFs.has(id)) return nodeSDFs.get(id)!;
     
     const node = nodesMap.get(id);
     if (!node || !node.visible) {
-      const emptyFn = () => 1000;
+      const emptyFn: SDFWithColor = { sdf: () => 1000, color: 'hsl(0, 0%, 50%)' };
       nodeSDFs.set(id, emptyFn);
       return emptyFn;
     }
     
     if (node.type === 'boolean' && node.booleanParams) {
       const { operation, operandA, operandB, smoothness } = node.booleanParams;
-      const sdfA = getNodeSDF(operandA);
-      const sdfB = getNodeSDF(operandB);
+      const sdfAData = getNodeSDF(operandA);
+      const sdfBData = getNodeSDF(operandB);
       
       const boolFn = (p: Vector3): number => {
-        const dA = sdfA(p);
-        const dB = sdfB(p);
+        const dA = sdfAData.sdf(p);
+        const dB = sdfBData.sdf(p);
         
         switch (operation) {
           case 'union': return sdfUnion(dA, dB);
@@ -140,12 +149,36 @@ const buildSceneSDF = (
         }
       };
       
-      nodeSDFs.set(id, boolFn);
-      return boolFn;
+      // For boolean, get color from closest operand
+      const getColorFn = (p: Vector3): string => {
+        const dA = sdfAData.sdf(p);
+        const dB = sdfBData.sdf(p);
+        
+        // For subtract, use A's color since we're carving out of A
+        if (operation === 'subtract' || operation === 'smoothSubtract') {
+          return sdfAData.color;
+        }
+        
+        // For union/intersect, use the color of the closer surface
+        return Math.abs(dA) < Math.abs(dB) ? sdfAData.color : sdfBData.color;
+      };
+      
+      const result: SDFWithColor = { 
+        sdf: boolFn, 
+        color: node.material.color 
+      };
+      // Override color getter for complex coloring
+      (result as any).getColor = getColorFn;
+      
+      nodeSDFs.set(id, result);
+      return result;
     }
     
     // Primitive node
-    const primFn = (p: Vector3) => evaluatePrimitive(p, node);
+    const primFn: SDFWithColor = {
+      sdf: (p: Vector3) => evaluatePrimitive(p, node),
+      color: node.material.color,
+    };
     nodeSDFs.set(id, primFn);
     return primFn;
   };
@@ -167,16 +200,40 @@ const buildSceneSDF = (
   const topLevelNodes = nodes.filter(n => !referencedIds.has(n.id) && n.visible);
   
   if (topLevelNodes.length === 0) {
-    return () => 1000;
+    return { sceneSDF: () => 1000, getColor: () => 'hsl(0, 0%, 50%)' };
   }
   
-  return (p: Vector3): number => {
-    let result = getNodeSDF(topLevelNodes[0].id)(p);
+  const sceneSDF = (p: Vector3): number => {
+    let result = getNodeSDF(topLevelNodes[0].id).sdf(p);
     for (let i = 1; i < topLevelNodes.length; i++) {
-      result = sdfUnion(result, getNodeSDF(topLevelNodes[i].id)(p));
+      result = sdfUnion(result, getNodeSDF(topLevelNodes[i].id).sdf(p));
     }
     return result;
   };
+  
+  const getColor = (p: Vector3): string => {
+    let closestDist = Infinity;
+    let closestColor = 'hsl(0, 0%, 50%)';
+    
+    for (const node of topLevelNodes) {
+      const nodeData = getNodeSDF(node.id);
+      const d = Math.abs(nodeData.sdf(p));
+      
+      if (d < closestDist) {
+        closestDist = d;
+        // Use nested color getter if available (for booleans)
+        if ((nodeData as any).getColor) {
+          closestColor = (nodeData as any).getColor(p);
+        } else {
+          closestColor = nodeData.color;
+        }
+      }
+    }
+    
+    return closestColor;
+  };
+  
+  return { sceneSDF, getColor };
 };
 
 // Adaptive octree node
@@ -288,12 +345,12 @@ const findSurfacePoint = (
 const generateFacesFromOctree = (
   node: OctreeNode,
   sdfFunc: (p: Vector3) => number,
-  baseColor: string,
+  getColor: (p: Vector3) => string,
   faces: Face[]
 ): void => {
   if (node.children && node.children.length > 0) {
     for (const child of node.children) {
-      generateFacesFromOctree(child, sdfFunc, baseColor, faces);
+      generateFacesFromOctree(child, sdfFunc, getColor, faces);
     }
     return;
   }
@@ -306,6 +363,9 @@ const generateFacesFromOctree = (
     { x: center.x + normal.x * size, y: center.y + normal.y * size, z: center.z + normal.z * size },
     sdfFunc
   );
+  
+  // Get color at surface point
+  const color = getColor(surfacePoint);
   
   // Create tangent vectors for quad
   const absNx = Math.abs(normal.x);
@@ -356,7 +416,7 @@ const generateFacesFromOctree = (
   
   faces.push({
     verts: [v1, v2, v3, v4],
-    color: baseColor,
+    color,
     normal,
   });
 };
@@ -368,7 +428,6 @@ export const renderSDFNodes = (
     boundSize?: number;
     minCellSize?: number;
     maxDepth?: number;
-    color?: string;
   } = {}
 ): Face[] => {
   const visibleNodes = nodes.filter(n => n.visible);
@@ -378,7 +437,6 @@ export const renderSDFNodes = (
     boundSize = 8,
     minCellSize = 0.15,
     maxDepth = 6,
-    color = 'hsl(200, 70%, 55%)',
   } = options;
   
   // Build node map
@@ -387,8 +445,8 @@ export const renderSDFNodes = (
     nodesMap.set(node.id, node);
   }
   
-  // Build combined SDF
-  const sceneSDF = buildSceneSDF(nodes, nodesMap);
+  // Build combined SDF with color support
+  const { sceneSDF, getColor } = buildSceneSDF(nodes, nodesMap);
   
   // Build adaptive octree
   const octree = buildAdaptiveOctree(
@@ -402,7 +460,7 @@ export const renderSDFNodes = (
   const faces: Face[] = [];
   
   if (octree) {
-    generateFacesFromOctree(octree, sceneSDF, color, faces);
+    generateFacesFromOctree(octree, sceneSDF, getColor, faces);
   }
   
   return faces;
