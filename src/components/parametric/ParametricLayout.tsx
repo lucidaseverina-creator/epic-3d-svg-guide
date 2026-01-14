@@ -2,7 +2,7 @@
 // PARAMETRIC ENGINE LAYOUT - Main UI with Boolean Panel
 // ============================================
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParametricEngine } from '@/hooks/useParametricEngine';
 import { CurveEditor } from './CurveEditor';
 import { ParametricProperties } from './ParametricProperties';
@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ViewAxis, FeatureNodeContract } from '@/types/parametric';
 import { Face, ProjectedFace } from '@/types/engine';
 import { rotateEuler, project, add, calculateNormal, dot, normalize } from '@/lib/math';
+import { renderSDFNodes } from '@/lib/sdfRenderer';
 import { Box, FileDown, Plus, RotateCcw, Eye, Grid3X3, Layers, Settings } from 'lucide-react';
 
 export const ParametricLayout: React.FC = () => {
@@ -133,18 +134,36 @@ export const ParametricLayout: React.FC = () => {
     dispatch({ type: 'REMOVE_FEATURE', featureId });
   }, [dispatch]);
   
+  // Generate SDF faces when in boolean mode
+  const sdfFaces = useMemo((): Face[] => {
+    if (activePanel !== 'boolean' || sdfNodes.length === 0) return [];
+    
+    return renderSDFNodes(sdfNodes, {
+      boundSize: 8,
+      minCellSize: 0.12,
+      maxDepth: 6,
+      color: 'hsl(210, 80%, 55%)',
+    });
+  }, [activePanel, sdfNodes]);
+  
   // Project mesh faces for viewport
-  const projectedFaces = React.useMemo((): ProjectedFace[] => {
-    if (!meshFaces.length) return [];
+  const projectedFaces = useMemo((): ProjectedFace[] => {
+    // Use SDF faces in boolean mode, otherwise parametric mesh
+    const sourceFaces = activePanel === 'boolean' ? sdfFaces : meshFaces;
+    if (!sourceFaces.length) return [];
     
     const width = 800;
     const height = 600;
     const fov = 800;
-    const scale = spec?.baseForm.L ? 80 / spec.baseForm.L : 20;
+    
+    // Scale: SDF units are in meters, parametric uses spec length
+    const scale = activePanel === 'boolean' 
+      ? 50  // SDF scale factor
+      : (spec?.baseForm.L ? 80 / spec.baseForm.L : 20);
     
     const lightDir = normalize({ x: 0.5, y: 1, z: 0.5 });
     
-    return meshFaces.map((face, i) => {
+    return sourceFaces.map((face, i) => {
       // Scale vertices
       const scaledVerts = face.verts.map(v => ({
         x: v.x * scale,
@@ -163,24 +182,31 @@ export const ParametricLayout: React.FC = () => {
       );
       
       // Calculate depth and lighting
+      const numVerts = rotatedVerts.length;
       const center = {
-        x: rotatedVerts.reduce((s, v) => s + v.x, 0) / 3,
-        y: rotatedVerts.reduce((s, v) => s + v.y, 0) / 3,
-        z: rotatedVerts.reduce((s, v) => s + v.z, 0) / 3,
+        x: rotatedVerts.reduce((s, v) => s + v.x, 0) / numVerts,
+        y: rotatedVerts.reduce((s, v) => s + v.y, 0) / numVerts,
+        z: rotatedVerts.reduce((s, v) => s + v.z, 0) / numVerts,
       };
       
       const normal = face.normal || calculateNormal(rotatedVerts);
       const diffuse = Math.max(0, dot(normal, lightDir));
       const lightIntensity = 0.3 + 0.7 * diffuse;
+      
+      // Apply lighting to color
+      const baseHue = activePanel === 'boolean' ? 210 : 200;
+      const litColor = `hsl(${baseHue}, 70%, ${30 + lightIntensity * 40}%)`;
+      
       return {
         verts: scaledVerts,
         projectedVerts,
         depth: center.z + cameraPosition.z,
-        color: face.color,
+        color: litColor,
         lightIntensity,
       };
-    }).filter(f => f.depth > 50);
-  }, [meshFaces, cameraRotation, cameraPosition, spec]);
+    }).filter(f => f.depth > 50)
+      .sort((a, b) => a.depth - b.depth); // Sort by depth for proper rendering
+  }, [activePanel, meshFaces, sdfFaces, cameraRotation, cameraPosition, spec]);
   
   return (
     <div className="flex h-screen bg-background overflow-hidden">
