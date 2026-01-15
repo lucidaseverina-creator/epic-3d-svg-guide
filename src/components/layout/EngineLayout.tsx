@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { EngineType, ToolType, CameraPreset, RenderMode } from '@/types/engine';
 import { useScene } from '@/hooks/useScene';
 import { renderScene, getDefaultConfig } from '@/lib/renderer';
+import { renderSDFNodes } from '@/lib/sdfRenderer';
 
 import { TopBar } from '@/components/layout/TopBar';
 import { IconBar } from '@/components/layout/IconBar';
@@ -14,6 +15,8 @@ import { DrawerContainer } from '@/components/drawers/DrawerContainer';
 import { ObjectsDrawer } from '@/components/drawers/ObjectsDrawer';
 import { LightingDrawer } from '@/components/drawers/LightingDrawer';
 import { PropertiesDrawer } from '@/components/drawers/PropertiesDrawer';
+import { BooleanPanel, SDFNode, SDFPrimitiveType, BooleanOp } from '@/components/parametric/BooleanPanel';
+import { SDFSettingsDrawer } from '@/components/drawers/SDFSettingsDrawer';
 
 interface EngineLayoutProps {
   engineType?: EngineType;
@@ -43,6 +46,106 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   // Animation time for 3D effects
   const [animationTime, setAnimationTime] = useState(0);
   const animationRef = useRef<number>();
+
+  // ============================================
+  // SDF Boolean State Management
+  // ============================================
+  const [sdfNodes, setSdfNodes] = useState<SDFNode[]>([]);
+  const [selectedSdfNodeId, setSelectedSdfNodeId] = useState<string | null>(null);
+  
+  // SDF Settings
+  const [sdfQuality, setSdfQuality] = useState<'draft' | 'standard' | 'high' | 'ultra'>('standard');
+  const [sdfShowWireframe, setSdfShowWireframe] = useState(false);
+  const [sdfAdaptiveRefinement, setSdfAdaptiveRefinement] = useState(true);
+  const [sdfMaxDepth, setSdfMaxDepth] = useState(5);
+
+  // SDF Node handlers
+  const handleAddSdfNode = useCallback((type: SDFPrimitiveType) => {
+    const id = `sdf-${Date.now()}`;
+    const colors = [
+      'hsl(220, 70%, 50%)', 'hsl(0, 70%, 50%)', 'hsl(120, 70%, 45%)',
+      'hsl(280, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'
+    ];
+    const newNode: SDFNode = {
+      id,
+      name: `${type.charAt(0).toUpperCase() + type.slice(1)} ${sdfNodes.length + 1}`,
+      type,
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      visible: true,
+      locked: false,
+      material: {
+        color: colors[sdfNodes.length % colors.length],
+        roughness: 0.5,
+        metallic: 0.0,
+      },
+      primitiveParams: type === 'sphere' ? { radius: 0.5 } :
+                       type === 'box' ? {} :
+                       type === 'torus' ? { majorRadius: 0.4, minorRadius: 0.15 } :
+                       type === 'cylinder' ? { radius: 0.3, height: 1 } :
+                       type === 'capsule' ? { radius: 0.25, height: 0.8 } :
+                       type === 'octahedron' ? { radius: 0.5 } : {},
+    };
+    setSdfNodes(prev => [...prev, newNode]);
+    setSelectedSdfNodeId(id);
+  }, [sdfNodes.length]);
+
+  const handleUpdateSdfNode = useCallback((id: string, updates: Partial<SDFNode>) => {
+    setSdfNodes(prev => prev.map(n => n.id === id ? { ...n, ...updates } : n));
+  }, []);
+
+  const handleDeleteSdfNode = useCallback((id: string) => {
+    setSdfNodes(prev => prev.filter(n => n.id !== id));
+    if (selectedSdfNodeId === id) setSelectedSdfNodeId(null);
+  }, [selectedSdfNodeId]);
+
+  const handleDuplicateSdfNode = useCallback((id: string) => {
+    const node = sdfNodes.find(n => n.id === id);
+    if (!node) return;
+    const newId = `sdf-${Date.now()}`;
+    const duplicate: SDFNode = {
+      ...node,
+      id: newId,
+      name: `${node.name} Copy`,
+      position: { ...node.position, x: node.position.x + 0.5 },
+    };
+    setSdfNodes(prev => [...prev, duplicate]);
+    setSelectedSdfNodeId(newId);
+  }, [sdfNodes]);
+
+  const handleCreateBoolean = useCallback((operation: BooleanOp, operandA: string, operandB: string) => {
+    const nodeA = sdfNodes.find(n => n.id === operandA);
+    const nodeB = sdfNodes.find(n => n.id === operandB);
+    if (!nodeA || !nodeB) return;
+
+    const id = `bool-${Date.now()}`;
+    const boolNode: SDFNode = {
+      id,
+      name: `${operation.charAt(0).toUpperCase() + operation.slice(1)} ${sdfNodes.filter(n => n.type === 'boolean').length + 1}`,
+      type: 'boolean',
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      visible: true,
+      locked: false,
+      material: { ...nodeA.material },
+      booleanParams: {
+        operation,
+        operandA,
+        operandB,
+        smoothness: operation.startsWith('smooth') ? 0.1 : 0,
+      },
+    };
+    setSdfNodes(prev => [...prev, boolNode]);
+    setSelectedSdfNodeId(id);
+  }, [sdfNodes]);
+
+  // Render SDF faces when nodes exist
+  const sdfFaces = useMemo(() => {
+    if (sdfNodes.length === 0) return [];
+    return renderSDFNodes(sdfNodes as any, { quality: sdfQuality });
+  }, [sdfNodes, sdfQuality]);
   
   // Scene state from hook
   const {
@@ -155,11 +258,35 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
             3D SDF Effects coming soon - will add metaballs, fluid, clouds as scene objects
           </div>
         );
+      case 'boolean':
+        return (
+          <BooleanPanel
+            nodes={sdfNodes}
+            selectedNodeId={selectedSdfNodeId}
+            onSelectNode={setSelectedSdfNodeId}
+            onAddNode={handleAddSdfNode}
+            onUpdateNode={handleUpdateSdfNode}
+            onDeleteNode={handleDeleteSdfNode}
+            onDuplicateNode={handleDuplicateSdfNode}
+            onCreateBoolean={handleCreateBoolean}
+          />
+        );
+      case 'sdf-settings':
+        return (
+          <SDFSettingsDrawer
+            quality={sdfQuality}
+            onQualityChange={setSdfQuality}
+            showWireframe={sdfShowWireframe}
+            onShowWireframeChange={setSdfShowWireframe}
+            adaptiveRefinement={sdfAdaptiveRefinement}
+            onAdaptiveRefinementChange={setSdfAdaptiveRefinement}
+            maxDepth={sdfMaxDepth}
+            onMaxDepthChange={setSdfMaxDepth}
+          />
+        );
       case 'camera':
       case 'rendering':
       case 'settings':
-      case 'boolean':
-      case 'sdf-settings':
         return (
           <div className="p-4 text-center text-muted-foreground text-sm">
             {activeDrawer.charAt(0).toUpperCase() + activeDrawer.slice(1)} settings coming soon
@@ -299,7 +426,7 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
             side="right"
             activeDrawer={activeDrawer}
             onDrawerToggle={handleDrawerToggle}
-            supportsSDF={currentEngine === 'sdflux'}
+            supportsSDF={true}
           />
         </div>
       </div>
