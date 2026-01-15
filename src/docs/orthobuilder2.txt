@@ -1,0 +1,4578 @@
+That’s already encoded in your own orthobuilder direction: SharedBoundary patch templates guarantee clean quad rings, and port→UV locking prevents loop drift forever. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+The invariant to enforce
+
+When the user draws a curve on the object:
+
+The curve stays exact in the drawing ortho (SVG truth).
+
+The system creates a 3D curve that is exactly the intersection of:
+
+the model surface (your field graph / SDF truth), and
+
+the curve’s curtain constraint (extrusion of the 2D curve along the view axis).
+
+That curve is promoted to a SharedBoundary / FeatureCurve that must become an edge constraint in the quad layout.
+
+The quad layout is regenerated patch-wise, using templates (annulus/ribbon/coons), so new lines insert new rings/loops deterministically.
+
+That’s the “compiler” move: a new line inserts a new boundary ⇒ boundary splits/creates patches ⇒ patches emit quads. 
+
+orthobuilder
+
+A concrete mechanism that stays “SVG/SDF-pure”
+A) Curve-on-surface without “mesh approximation”
+
+Represent the new drawn curve as a constraint manifold:
+
+2D curve in ortho plane: c(u) (Bezier/NURBS, exact)
+
+Curtain in 3D: P(u, v) = lift(c(u)) + v * n_view (ruled surface)
+
+Surface: d_model(p) = 0 (your field graph truth)
+
+Intersection curve is defined implicitly by: d_model(P(u, v)) = 0
+
+So the 3D curve is not stored as a polyline; it is stored as:
+
+the 2D param curve c(u)
+
+the view axis n_view
+
+the root function v(u) defined by d_model(P(u, v(u))) = 0
+
+Evaluation is a deterministic 1D solve per u (arbitrary precision). This matches your existing “surface query” mindset (SDF callable) 
+
+MODELMAKER_MASTER_MONOLITH
+
+ and your own “lift rule” language (SurfaceProject / MultiViewFit). 
+
+orthobuilder
+
+B) Promote the curve into topology: SharedBoundary + PANP
+
+This is the “no sliding ever” rule you wrote:
+
+Store curve segments between named ports
+
+Parameter s is normalized per segment
+
+UV mapping pins port u positions
+
+Interior samples are monotonic between pinned ports 
+
+orthobuilder
+
+That is exactly how you guarantee that when a new curve is added later, you don’t “retopo” in the traditional sense—you recompile the patch graph and the UV rails keep everything locked.
+
+C) Patch graph update (this is the retopo engine)
+
+When the new curve is added, you do a topological edit:
+
+Case 1: closed loop on a patch
+
+becomes a new inner boundary → AnnularQuadPatch(outerBoundary, innerBoundary) 
+
+orthobuilder
+
+seam placement is explicit (critical for determinism) 
+
+orthobuilder
+
+ports lock u (corner/commissure/etc), so operators stay stable across all edits 
+
+orthobuilder
+
+Case 2: open curve that connects two boundaries
+
+splits one patch into two patches (two new boundary cycles)
+
+requires explicit endpoint ports on both ends; no “free endpoints” if you want pure quad flow.
+
+Case 3: open curve ending inside a patch
+
+you must compile it into a valid cut (either auto-extend to the nearest boundary along a deterministic rule, or force user to connect). Otherwise you get unavoidable T-junctions.
+
+This is the key: your topology is patch-template-driven, not remesher-driven. That’s why it can be “perfect”.
+
+Meshing that respects features: two-layer approach
+
+You already wrote the right separation:
+
+Field graph = truth
+
+Mesh = view/export/physics 
+
+orthobuilder
+
+So meshing should be feature-constrained and density-controlled:
+
+1) Density field (so new lines force local refinement)
+
+Edge length h(p) is not global; it shrinks near curvature and feature curves. 
+
+orthobuilder
+
+
+That means: when a new curve is added, you automatically get more resolution around it without “manual retopo”.
+
+2) Feature-aware extraction when you must polygonize
+
+For general SDFs, dual contouring (QEF-based) preserves sharp constraints better than naive marching cubes. 
+
+orthobuilder
+
+
+(But in your architecture, patch templates should be the primary quad generator; dual contouring is the fallback for regions you haven’t templated yet.)
+
+3) Feature masks that enforce “don’t blur my seam”
+
+Your fusion primitive already describes how to keep identity hard where m(p)=1 and allow softness elsewhere. 
+
+orthobuilder
+
+
+Use the same mask field to:
+
+force edge alignment to feature curves
+
+prevent relaxation from drifting across seams
+
+decide where to insert edge loops when new curves appear
+
+What “perfect retopology on every new line” looks like in code terms
+
+Not a remesh. A recompile.
+
+// 1) user draws curve in ortho
+const curve2D = svgPathToExactBezier(path);
+
+// 2) compile to curtain constraint
+const curtain = makeCurtain(curve2D, viewAxis, viewFrame);
+
+// 3) intersect with model field: defines a FeatureCurve implicitly
+const featureCurve = makeImplicitIntersectionCurve({
+  surfaceSdf: d_model,
+  curtain,
+  ports: userPortsOrAutoPorts(curve2D),
+});
+
+// 4) promote to SharedBoundary (PANP)
+const sharedBoundary = compileSharedBoundaryPANP(featureCurve);
+
+// 5) patch-graph cut + template selection
+patchGraph = patchGraph.insertBoundary(sharedBoundary); // splits/creates patches
+
+// 6) regenerate only affected patches into quads
+mesh = patchMesher.emitQuads(patchGraph, {
+  densityField: h(p),
+  seamRules: explicitSeams,
+  portUvLocks: true,
+});
+
+
+The “retopo” is step (5) and (6): patch splitting + template emission (annulus/ribbon/coons), exactly like your mouth/eye topology engine notes. 
+
+orthobuilder
+
+The fastest minimal milestone that proves the whole idea
+
+Build only these, end-to-end:
+
+Exact curve → curtain → implicit intersection curve (store as equation, not polyline)
+
+SharedBoundary + PANP (ports + pinned u positions) 
+
+orthobuilder
+
+One patch template: AnnularQuadPatch (because it instantly demonstrates “new line inserts clean quad rings”) 
+
+orthobuilder
+
+Local patch recompilation + density refinement near the new curve 
+
+orthobuilder
+
+Once that works on a sphere, you’ve solved the hard architectural problem: “draw a straight line in an ortho → it becomes a surface curve → it becomes an edge loop.”
+
+If you want, I’ll map this into a precise schema (SharedBoundary JSON + PatchGraph adjacency + deterministic ID rules), staying aligned with your monolith “SurfaceQuery” execution model and slice/contour discipline. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Sources
+proceed
+Thought for 50s
+
+Proceeding: here’s the exact schema + compilation pipeline that makes “draw a new line → perfect quad flow updates” work deterministically, with no loop sliding and no cracks.
+
+1) The non-negotiable invariant
+
+You already wrote the core separation that makes this possible: Bind Space (canonical) → View Space (orthos) → Runtime/Export (mesh). If you don’t separate these, views fight and proportions break. 
+
+orthobuilder
+
+So:
+
+Canonical truth is curves + patches + fields (analytic / parametric).
+
+Mesh is just a compiled sample of that truth at some density (any LOD, any time). 
+
+orthobuilder
+
+“Perfect retopology” therefore means: patch graph recompiles (not “remesh and hope”).
+
+2) Data model that makes topology behave like a compiler
+A) SemanticCurve (authored in orthos, stored as one 3D curve)
+
+Each semantic curve must exist as a single canonical 3D curve plus ports + lift policy. 
+
+orthobuilder
+
+type CurveId = string;
+type PortId = string;
+
+type LiftRule =
+  | { kind: "SurfaceProject"; view: "TOP"|"BOTTOM"|"FRONT"|"REAR"|"SIDE_L"|"SIDE_R"; targetSurfaceId: string }
+  | { kind: "MultiViewFit"; views: string[]; weights: Record<string, number> }
+  | { kind: "Hybrid"; primary: LiftRule; refine: LiftRule };
+
+type SemanticCurve = {
+  id: CurveId;              // deterministic
+  name: string;             // "MouthOuter", "Rib_07", "PanelSeam_A"
+  bindSpace: "WORLD" | "BONE:Skull" | "BONE:Jaw" | string;
+  C3D: { kind: "Bezier3D"; controlPoints: number[] } | { kind: "ImplicitIntersectionCurve"; ref: string };
+  sketches2D?: Partial<Record<string, { svgPath: string }>>; // optional view sketches
+  ports: { id: PortId; t: number; lock?: "HARD"|"SOFT" }[];
+  liftRule: LiftRule;
+};
+
+
+Lift policies you already outlined (SurfaceProject / MultiViewFit / Hybrid) are the correct triad. 
+
+orthobuilder
+
+B) SharedBoundary (the topology object)
+
+This is the “load-bearing” concept you explicitly called out: SharedBoundary patch templates guarantee clean quad rings. 
+
+orthobuilder
+
+And the rule that prevents loop sliding forever is: PANP (port-anchored normalized parameter), with port → fixed u pinning. 
+
+orthobuilder
+
+type SharedBoundaryId = string;
+
+type SharedBoundary = {
+  id: SharedBoundaryId;
+  curveId: CurveId;                 // the canonical curve this boundary comes from
+  kind: "ClosedLoop" | "OpenSegment";
+  seam: { portId: PortId; u0: 0.0 } | null;  // explicit seam required for loops :contentReference[oaicite:6]{index=6}
+  portU: Record<PortId, number>;     // commissure_L=0.0, upper_mid=0.25, ... :contentReference[oaicite:7]{index=7}
+  segments: { a: PortId; b: PortId; sNorm: "ARC_LENGTH" }[];
+};
+
+
+That “portU map” is the compiler guarantee—your operators remain predictable forever. 
+
+orthobuilder
+
+C) Patch templates (quad emission, not remeshing)
+
+Start with the two that already solve the hard problems:
+
+AnnularQuadPatch(outerBoundary, innerBoundary) for clean rings (lips / sockets / any “loop inside loop”). 
+
+orthobuilder
+
+RibbonPatch(boundarySegment, targetCurveOrBand) for controlled edge flow (eyelids, seams, panels). 
+
+orthobuilder
+
+type Patch =
+  | { kind: "AnnularQuadPatch"; outer: SharedBoundaryId; inner: SharedBoundaryId; seams: { primaryAt: PortId; secondaryAt?: PortId } }
+  | { kind: "RibbonPatch"; boundarySeg: SharedBoundaryId; target: CurveId | SharedBoundaryId; uConvention: string }
+  | { kind: "CoonsPatch"; top: SharedBoundaryId; bottom: SharedBoundaryId; left: SharedBoundaryId; right: SharedBoundaryId };
+
+3) PatchGraph edit operations: how “new line” becomes “new topology”
+
+When a new curve is added, you do graph surgery, not polygon surgery.
+
+Operations
+
+InsertClosedLoop(boundary)
+
+finds which patch domain contains it
+
+splits that patch into an outer + inner region
+
+replaces with AnnularQuadPatch (or annulus + surrounding coons, depending on context)
+
+InsertOpenCut(boundarySeg, endpoints)
+
+endpoints must land on existing boundaries or become new ports that are then attached
+
+splits a patch into two (no T-junctions)
+
+AttachToPort(boundary, port)
+
+promotes endpoints to hard invariants (ports), avoiding drift
+
+If you allow open curves that terminate in empty interior, you necessarily create T-junction logic. If you want “perfect,” require that open curves connect (or auto-extend by a deterministic rule you can always reproduce).
+
+4) The “no-crack guarantee” pattern from ModelMaker, generalized
+
+ModelMaker already solved a structurally identical problem: multiple subsystems must share the exact same boundary, so seams can’t crack. It uses a Sampler node that everything references. 
+
+MODELMAKER_MASTER_MONOLITH
+
+We lift that pattern directly:
+
+BoundarySamplerNode (for every SharedBoundary)
+
+Input: SharedBoundary + its canonical curve evaluator (Bezier / implicit)
+
+Output: a frame ring along u: positions, tangents, normals, and any per-u metadata
+
+All patches that touch that boundary use the same sampler output.
+
+This is the same archetype ModelMaker calls out as scalable to other domains (“fender seam sampler”, “rib perimeter sampler”, “aperture sampler”). 
+
+MODELMAKER_MASTER_MONOLITH
+
+So “perfect retopo” becomes: boundary sampler is the single source of truth for every adjacent patch.
+
+5) Draw-on-surface that stays exact in ortho and exact on the model
+
+You want: “straight in the plane it’s drawn” and “curves on the surface.”
+
+That is exactly your own SurfaceProject lift rule: draw defines a ray bundle, you intersect with the underform, producing the canonical curve. 
+
+orthobuilder
+
+
+And when you have multiple orthos, refine with MultiViewFit. 
+
+orthobuilder
+
+So the newly drawn curve becomes:
+
+a SemanticCurve with C3D = ImplicitIntersectionCurve (surface ∩ curtain),
+
+then a SharedBoundary (PANP),
+
+then PatchGraph recompiles locally.
+
+No ambiguity, no perspective, no “painted polyline.”
+
+6) Deterministic IDs (so “same inputs → identical outputs”)
+
+ModelMaker explicitly demands determinism. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Rule of thumb:
+
+CurveId = hash(name + bindSpace + orderedPorts + liftRuleSignature)
+
+SharedBoundaryId = hash(curveId + seamPort + portUMap)
+
+PatchId = hash(kind + orderedBoundaryIds + seamRules)
+
+If you do this, topology is reproducible across machines and rebuilds (critical if you’re generating assets at scale).
+
+7) Minimal build that proves the full thesis (fastest path)
+
+Implement only these four things first:
+
+BoundarySamplerNode (generalizing the monolith’s seam-perfect sampler idea). 
+
+MODELMAKER_MASTER_MONOLITH
+
+SharedBoundary + PANP + explicit seam (port→u locks). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+AnnularQuadPatch emitter (u around, v radial). 
+
+orthobuilder
+
+InsertClosedLoop(boundary) (PatchGraph surgery + local recompile)
+
+Test on: sphere underform + one loop → you should get flawless quad rings that never slide when you edit the loop.
+
+If you say proceed again, I’ll write the exact PatchGraph structures + algorithms for:
+
+“point-in-patch” classification (where the new loop lands),
+
+patch splitting into annulus + surrounding patches,
+
+sampler-driven quad emission (indices/UVs),
+
+and the rule-set for when to choose Annulus vs Ribbon vs Coons.
+
+Sources
+grok also said "This is an outstanding synthesis from ChatGPT—it's not just correct; it's the **exact architectural blueprint** that makes your system uniquely powerful and "perfect" in the way you've envisioned. By treating new drawn curves as **topological insertions** (not decorative overlays or post-remesh hacks), you avoid all the approximation pitfalls of traditional retopology tools. Instead, the system **recompiles** the patch graph deterministically, emitting clean quads via templates. This is pure "compiler" behavior: the field/SDF stays the infinite truth, the curve becomes a hard constraint, and the mesh is a derived view that always respects it.
+
+ChatGPT nailed the invariants and mechanisms straight from your orthobuilder notes:
+- **Exactness without storage bloat**: Implicit intersection curve (curtain ∩ surface) stored as equation + ports, not discretized points.
+- **No drift**: PANP + SharedBoundary locks everything forever.
+- **Clean topology insertion**: New boundaries split/create patches → templates emit structured quads (annular rings, ribbons, etc.).
+- **Feature-driven density**: Automatic refinement near new curves via h(p).
+- **No traditional remeshing**: Dual contouring only as fallback; primary generation is patch-template parametric.
+
+This is already superior to QuadriFlow/MIQ-style global remeshing because those algorithms operate on sampled triangles and can never guarantee **perfect** alignment or zero drift across edits. Your approach is **patch-graph recompilation**, which is deterministic, local (only affected patches rebuild), and infinitely editable.
+
+### Why This Achieves "Perfect Retopology on Every New Line"
+Traditional retopo (even QuadriFlow) is a destructive post-process: you add a curve, approximate it on the mesh, then run a global optimizer that might shift existing topology slightly. Your system does the opposite:
+
+1. **Curve is promoted to topology immediately** → becomes a SharedBoundary.
+2. **Patch graph updates topologically** → clean splits/merges (no T-junctions unless explicitly allowed).
+3. **Quad emission is template-driven** → always regular, flow-aligned, seam-controlled.
+4. **Density follows features automatically** → new curve gets local refinement without manual painting.
+5. **Everything stays locked** → ports + UV pinning means operators (blink, smile, etc.) never break.
+
+The result: every new line inserts **clean, predictable topology** (e.g., perfect quad loops) with zero manual cleanup.
+
+### Refinements & Integration with Your Full System
+To make this bulletproof across 6 orthos and assemblies:
+
+- **Multi-View Consistency on Insertion**:
+  When the user draws in one ortho, immediately reproject the implicit 3D curve to the other 5 orthos (exact linear transform). Show faint guides there so the user can add confirming curves if needed. If discrepancies arise, use your weighted fusion diagnostics to highlight them.
+
+- **Constraint Validation on Insert**:
+  Before promoting to SharedBoundary:
+  - Ensure endpoints snap to existing ports or auto-create new ones.
+  - For open curves: require connection to boundary or auto-extend along principal curvature (deterministic rule).
+  - Reject or warn on impossible intersections (e.g., curtain misses surface).
+
+- **Hierarchical Assemblies**:
+  When drawing on a sub-model (e.g., arm in a body assembly), the curve insertion is local to that patch graph, but boundary bindings propagate to parent joints (your PANP across hierarchies).
+
+- **Density Field Update Rule**:
+  On new SharedBoundary:
+  
+h(p) = h_base * f_curv(p) * f_feature(p) * f_newCurve(p)
+
+  where f_newCurve(p) = 1 / (1 + dist(p, newBoundary)/width) → automatic refinement band.
+
+- **Fallback for Non-Templated Regions**:
+  Keep dual contouring + optional QuadriFlow pass only for "blobby" zones you haven't patched yet. But prioritize expanding the template library (annular, ribbon, Coons, Gordon) — they're faster and more predictable.
+
+### The Minimal Milestone That Proves It All
+ChatGPT's suggested milestone is perfect—implement it exactly, starting with a sphere (analytic SDF) to eliminate any sampling noise:
+
+1. **Sphere as base field** (closed-form SDF).
+2. **Draw closed curve in one ortho** (e.g., great circle latitude).
+3. **Compile implicit intersection** → SharedBoundary.
+4. **Insert as inner boundary** → AnnularQuadPatch emits perfect quad rings.
+5. **Add second curve** → another ring inserts cleanly, density refines locally.
+
+Once this works interactively (draw → instant clean rings), you've proven the entire "draw line → perfect topology" loop. From there, extend to open curves (ribbon splits) and multi-patch models.
+
+This is the breakthrough moment—the system becomes truly alive and infinitely extensible. If you want, we can prototype the annular patch emission in code right now, or sketch the exact AnnularQuadPatch algorithm (UV grid + seam rules). Say the word and we'll build it step by step."
+Thought for 1m 39s
+
+Proceeding: we’ll lock in the “draw line → topology insertion → perfect quads” core, starting with the AnnularQuadPatch template (the minimal proof that the compiler works).
+
+0) Non-negotiable invariants
+
+A drawn curve is promoted to topology (a SharedBoundary), not “a line on top.” That’s exactly the mechanism your notes call out as the topology engine (e.g., mouth outer + inner → annulus). 
+
+orthobuilder
+
+No loop sliding / no drift: every SharedBoundary is port-parametrized (PANP) and ports pin u forever. 
+
+orthobuilder
+
+No cracks: everything that touches that boundary reads from the same boundary sampler—same idea as the monolith’s seam-perfect “sampler frames” contract. 
+
+MODELMAKER_MASTER_MONOLITH
+
+1) The objects that make “perfect retopo” automatic
+Port
+
+A named invariant point on a boundary: commissure_L, upper_mid, etc. Ports are what you pin to fixed u. 
+
+orthobuilder
+
+SharedBoundary
+
+A closed loop compiled from curve segments between ports. That’s the canonical thing patches bind to. 
+
+orthobuilder
+
+SharedBoundarySampler
+
+A deterministic resampling of the boundary into M frames (like cockpit sampler frames), so every dependent patch references identical points (no cracks). 
+
+MODELMAKER_MASTER_MONOLITH
+
+PatchTemplate
+
+A deterministic emitter of quads (annulus, ribbon, Coons, Gordon…). For lips, the note is explicit: AnnularQuadPatch(outerBoundary, innerBoundary) with u around, v radial. 
+
+orthobuilder
+
+2) Port → u locking (the seam rule)
+
+Annulus stability comes from explicit seam placement and fixed u pins (so expressions/operators always hit the same semantic locations). 
+
+orthobuilder
+
+General rule:
+
+Pick a seam port (e.g., commissure_L) → define u=0 there.
+
+Pin other ports at known u (or computed arc-fractions but pinned once chosen).
+
+That’s the entire reason you get compiler-like repeatability instead of clay.
+
+3) AnnularQuadPatch: exact topology + deterministic sampling
+Inputs
+
+outer: SharedBoundary
+
+inner: SharedBoundary
+
+M = subdivisions around loop
+
+H = radial subdivisions (outer→inner)
+
+Step A — build a global u map for each boundary (PANP)
+
+Each segment between two ports has its own normalized parameter s∈[0,1]; map it to u linearly between pinned uA→uB (wrapping at 1). That’s straight from the PANP rule set. 
+
+orthobuilder
+
+Step B — produce sampler frames (the “no-crack guarantee”)
+
+For k=0..M-1, u=k/M:
+
+O[k] = outer.eval(u)
+
+I[k] = inner.eval(u)
+
+Now every patch that touches outer/inner reads these arrays, exactly like the monolith’s “every subsystem references the same boundary.” 
+
+MODELMAKER_MASTER_MONOLITH
+
+Step C — emit quads (template grid)
+
+Vertices: (H+1) * M
+Indexing: (r,k) with wrap in k.
+
+Geometry rule (simple, deterministic):
+
+v = r/H
+
+P(r,k) = lerp( O[k], I[k], v )
+
+That’s not “retopo after the fact.” That is the topology, emitted from the template.
+
+4) Minimal TypeScript skeleton (annulus emission)
+
+This is the “it works today” core. You can swap lerp for a bulge/Coons style later without changing topology.
+
+type V3 = { x: number; y: number; z: number };
+
+function lerp(a: V3, b: V3, t: number): V3 {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+}
+
+interface SharedBoundary {
+  // Canonical eval: u in [0,1). Internally this is PANP piecewise mapping across port segments.
+  eval(u: number): V3;
+
+  // Stable seam + port->u pins live here.
+  // e.g. { commissure_L: 0.0, upper_mid: 0.25, commissure_R: 0.5, lower_mid: 0.75 }
+  portU: Record<string, number>;
+}
+
+function buildAnnularQuadPatch(params: {
+  outer: SharedBoundary;
+  inner: SharedBoundary;
+  M: number;   // around loop
+  H: number;   // radial
+}) {
+  const { outer, inner, M, H } = params;
+
+  // --- Sampler frames (no-crack contract)
+  const O: V3[] = new Array(M);
+  const I: V3[] = new Array(M);
+  for (let k = 0; k < M; k++) {
+    const u = k / M;
+    O[k] = outer.eval(u);
+    I[k] = inner.eval(u);
+  }
+
+  // --- Vertex grid
+  const verts: number[] = []; // xyz packed
+  for (let r = 0; r <= H; r++) {
+    const v = r / H;
+    for (let k = 0; k < M; k++) {
+      const p = lerp(O[k], I[k], v);
+      verts.push(p.x, p.y, p.z);
+    }
+  }
+
+  // --- Quad indices as triangles (2 per quad)
+  const idx: number[] = [];
+  const row = M;
+  for (let r = 0; r < H; r++) {
+    for (let k = 0; k < M; k++) {
+      const k1 = (k + 1) % M;
+
+      const a = r * row + k;
+      const b = r * row + k1;
+      const c = (r + 1) * row + k1;
+      const d = (r + 1) * row + k;
+
+      // (a,b,c) and (a,c,d)
+      idx.push(a, b, c, a, c, d);
+    }
+  }
+
+  return { positions: new Float32Array(verts), indices: new Uint32Array(idx) };
+}
+
+5) Where the “draw onto object” plugs in (without approximation drift)
+
+Your binding system already states the lift rules you need:
+
+SurfaceProject (ray bundle from view, intersect underform)
+
+MultiViewFit (minimize reprojection error)
+
+Hybrid (project for depth, fit for refinement) 
+
+orthobuilder
+
+So the pipeline is:
+
+User draws curve in an ortho (2D SVG exact).
+
+Lift to canonical 3D curve via SurfaceProject / Hybrid. 
+
+orthobuilder
+
+If it’s closed → promote to SharedBoundary (insert ports, pin u).
+
+PatchGraph does a local topological update:
+
+if it splits a region into outer+inner loop → instantiate AnnularQuadPatch.
+
+Recompile only affected patches → emit clean quads deterministically.
+
+That’s exactly why this beats any “global remesh” approach: nothing is trying to rediscover topology from triangles. Topology is declared.
+
+6) The minimal milestone (the proof)
+
+Do this on a sphere first (analytic underform, zero ambiguity):
+
+Base: sphere underform.
+
+Draw a closed curve in TOP (a circle/line segment that becomes a latitude/great-circle intersection after lift).
+
+Promote to SharedBoundary + pin seam port.
+
+Insert as inner boundary inside an existing outer boundary (equator or a predefined mouth outer loop).
+
+Emit AnnularQuadPatch rings—then draw a second loop and watch the annulus update locally.
+
+Once this is interactive, you’ve proven the core claim: every new line inserts perfect topology immediately.
+
+If you want the next “proceed” chunk, I’ll do curve insertion rules (how we deterministically decide: annulus vs ribbon vs split patch, how ports auto-spawn, and the exact validity checks when a curtain misses the surface).
+
+Sources
+proceed
+Thought for 1m 18s
+
+Let’s lock this into a compiler-grade “curve insertion → perfect topology” spec, using what’s already in your notes: SharedBoundary + PANP + patch templates as the primary topology engine (not post-remesh). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+1) The non-negotiable invariants
+
+These are the contracts that make “perfect retopology on every new line” actually true:
+
+Curves become topology, immediately: every new meaningful curve is promoted to a SharedBoundary (or a segment feeding one). 
+
+orthobuilder
+
+No loop sliding, ever: every SharedBoundary is port-parameterized (PANP): segments stored between named ports; normalized parameter s∈[0,1] per segment; ports pin u forever. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Mesh is a derived view: patches are the truth for topology layout (stable (u,v) domains); triangles/quads are just sampling. 
+
+orthobuilder
+
+Seam perfection by shared sampling: any subsystem that references a boundary must use the same sampler frames, or you get cracks. This exact “one sampler feeds all consumers” contract is already proven in ModelMaker (cockpit wall/rim/floor/hole all using the same sampler frames). 
+
+MODELMAKER_MASTER_MONOLITH
+
+2) “Draw on surface” without approximation (and without storing point clouds)
+
+Your orthobuilder already defines the correct lift policies:
+
+SurfaceProject (depth comes from projecting the 2D curve’s ray bundle onto a proxy/underform surface) 
+
+orthobuilder
+
+MultiViewFit (solve the 3D curve to minimize reprojection error into multiple orthos) 
+
+orthobuilder
+
+Hybrid (best default): project for depth, then refine with multiview while regularizing depth to prevent popping 
+
+orthobuilder
+
+Key point: you don’t store “sampled projected points” as the canonical curve. You store:
+
+the 2D curve (SVG/bezier) + view calibration, and
+
+the lift policy + proxies + ports, and
+
+(optionally) a cached sampler that can be rebuilt deterministically.
+
+That’s exactly the same pattern as your “sampler meta node” approach in ModelMaker: rebuildable, deterministic, seam-safe. 
+
+MODELMAKER_MASTER_MONOLITH
+
+3) The actual compiler pipeline: 2D stroke → SharedBoundary → patch-graph delta → quads
+Stage A — Promote stroke to a SharedBoundary candidate
+
+User draws curve C2D(s) in an ortho.
+
+System assigns a truth_mode: AUTHORITATIVE | DERIVED | HYBRID. 
+
+orthobuilder
+
+System creates/attaches ports:
+
+If the curve endpoints land near existing ports/boundaries → snap.
+
+If it intersects a boundary at a non-port location → insert a new port there (deterministically).
+
+Compute canonical parameterization:
+
+Segment the curve between ports.
+
+Each segment gets normalized s∈[0,1] (PANP).
+
+Stage B — Lift to canonical 3D curve (still “exact” in your sense)
+
+Use your lift policies: SurfaceProject / MultiViewFit / Hybrid. 
+
+orthobuilder
+
+
+For facial-style curves, you already wrote concrete examples (eyelid glide surface + multiview refine + clearance constraints). 
+
+orthobuilder
+
+Stage C — Promote to topology: SharedBoundary
+
+Now the curve is no longer “a drawn line.” It becomes:
+
+SharedBoundary(id, ports[], segments[], seamRules, uvPinRules)
+
+And the seam rules are explicit (this is crucial for stability of operators and consistent quad layout):
+
+Example: mouth seam at left commissure u=0, optional second seam at right u=0.5, with specific ports pinned to fixed u. 
+
+orthobuilder
+
+Stage D — Patch graph update (topological insertion)
+
+This is where “perfect retopo” is guaranteed: the patch graph changes, then templates re-emit quads.
+
+Minimal operations (think PatchEngine-style deterministic deltas):
+
+ADD_PORT
+
+ADD_SHARED_BOUNDARY
+
+SPLIT_PATCH_BY_BOUNDARY
+
+REPLACE_PATCH_WITH_TEMPLATE(...)
+
+ModelMaker already has the philosophy + infrastructure: deterministic ops, deterministic apply order, orphan resolution, protected intervals. 
+
+MODELMAKER_MASTER_MONOLITH
+
+4) The two core templates you need first
+Template 1: AnnularQuadPatch (closed curve insertion)
+
+This is explicitly in orthobuilder as the topology engine (lips are the proof case). 
+
+orthobuilder
+
+When it triggers
+
+A new closed SharedBoundary is inserted inside another closed SharedBoundary, or inside a patch interior and becomes an “inner boundary.”
+
+What it emits
+
+A stable (u,v) domain:
+
+u goes around the loop
+
+v goes radially outer→inner 
+
+orthobuilder
+
+Quads are just the structured grid in that domain.
+
+Why it stays perfect across edits
+
+Ports pin u at semantic landmarks (commissures, upper_mid, lower_mid, cupid peaks) so the quad layout can’t drift. 
+
+orthobuilder
+
+PANP makes everything between ports monotonic and stable. 
+
+orthobuilder
+
+Template 2: RibbonPatch (open curve insertion / eyelids prove it)
+
+You already specify RibbonPatch for eyelids: one SharedBoundary (lid margin) feeding two ribbon patches + optional orbital annulus. 
+
+orthobuilder
+
+When it triggers
+
+A new open SharedBoundary segment (or a boundary segment of a larger loop) is paired with a target guide (crease curve, rim band, orbital band).
+
+What it emits
+
+A stable strip (u,v) where:
+
+u along the boundary
+
+v across thickness/extent 
+
+orthobuilder
+
+This is the canonical “insert an edge loop / cut line” operation—except it’s not a mesh cut; it’s a patch emission rule.
+
+5) The seam-safe sampling contract (prevents cracks and prevents drift)
+
+Steal the proven ModelMaker contract verbatim, but generalize it:
+
+All patches consuming a boundary must use frames from the same boundary sampler.
+
+ModelMaker’s cockpit system proves the pattern: deck hole boundary, wall top ring, rim inner edge, floor boundary—all reference the same sampler frames, guaranteeing no cracks. 
+
+MODELMAKER_MASTER_MONOLITH
+
+So you implement:
+
+SharedBoundarySamplerNode → outputs frames[k] around the boundary (or along an open segment)
+
+Every patch template that touches that boundary reads frames (not independent resampling).
+
+Bonus: you can do “dirty s-band” partial rebuild later (also already sketched in ModelMaker). 
+
+MODELMAKER_MASTER_MONOLITH
+
+6) Determinism: stable IDs, stable selection, stable history
+
+You already have the exact rule set: quantize → format → build IDs from meaningful parts. 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+And the global requirement: if IDs change randomly, selection/history/overrides break. 
+
+MODELMAKER_MASTER_MONOLITH
+
+So:
+
+Boundary IDs derive from: boundary role + ordered port IDs + seam port + (optionally) view key
+
+Patch IDs derive from: template type + boundary IDs + region index
+
+Sample-frame IDs derive from: boundary ID + k index (and M)
+
+This makes “recompile topology” safe.
+
+7) The minimal milestone that proves the whole paradigm
+
+Do exactly what Grok suggested, because it’s the cleanest proof:
+
+Base surface = sphere analytic field (no ambiguity).
+
+Draw a closed curve in one ortho → lift via SurfaceProject/Hybrid.
+
+Promote to SharedBoundary.
+
+Insert as inner boundary → AnnularQuadPatch emits quad rings (seam pinned).
+
+Draw a second curve → insert another annulus/ribbon split; only local patches rebuild.
+
+Once “draw → instant clean rings” works, you’ve proven:
+
+curve promotion,
+
+PANP stability,
+
+template quad emission,
+
+seam-safe sampling,
+
+deterministic recompilation.
+
+If you want, next message I’ll write the exact data structures + the AnnularQuadPatch emission algorithm (grid construction, seam pinning, port-aware u subdivision, and the boundary sampler interface) in TS-style to drop straight into your React/Three codebase.
+
+Sources
+proceed
+Thought for 1m 55s
+Step 1 (Foundation): implement ReferencePack exactly as the “CAD underlay” layer
+
+This is the first hard dependency in the Modelmaker build order: ReferencePack → Curve-First → Feature Nodes → … 
+
+MODELMAKER_MASTER_MONOLITH
+
+The invariants you’re enforcing:
+
+World units are meters (1 unit = 1 meter) and orthographic cameras only. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Each view image lives on a plane whose meter size is derived from pxPerMeter (measured from the 1m scale bar). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Alignment is deterministic: same pack.json → identical plane transforms on reload. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Minimal implementation package (React Three Fiber + TS)
+1) Types (match your schema)
+
+Core pack.json shape (id/units/views + per-view calibration fields) is exactly what you already specified. 
+
+MODELMAKER_MASTER_MONOLITH
+
+// refpack/types.ts
+export type Px = [number, number];
+export type ViewAxis = "TOP" | "SIDE" | "FRONT" | "REAR";
+
+export interface ViewCal {
+  pxPerMeter: number;
+  originPx: Px;
+  centerlinePx: [Px, Px];
+  anchorA_Px: Px;
+  anchorB_Px: Px;
+}
+
+export interface ViewDef {
+  image: string;           // relative path inside pack folder
+  axis: ViewAxis;
+  cal: ViewCal;
+  opacity: number;         // default ~0.55
+  crop?: { x: number; y: number; width: number; height: number } | null;
+}
+
+export interface ReferencePack {
+  id: string;
+  units: "meter";
+  notes?: string;
+  views: Partial<Record<"top" | "side" | "front" | "rear", ViewDef>>;
+}
+
+2) Math (exact formulas you want reused everywhere)
+
+Pixel→meters conversion and centerline angle are the “atomic truths” of the layer. 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+// refpack/math.ts
+import type { Px, ViewCal } from "./types";
+
+export function pxToMeters(px: Px, cal: ViewCal) {
+  const mpp = 1 / cal.pxPerMeter;
+  const u = (px[0] - cal.originPx[0]) * mpp;
+  const v = (px[1] - cal.originPx[1]) * mpp;
+  return { u, v };
+}
+
+export function centerlineAngle(cal: ViewCal) {
+  const [a, b] = cal.centerlinePx;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  return Math.atan2(dy, dx); // image-space angle
+}
+
+export function rotate2(u: number, v: number, ang: number) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return { u: u * c - v * s, v: u * s + v * c };
+}
+
+3) Axis mapping (local plane → world)
+
+Keep this centralized so every other system (curve extraction, silhouette metrics, fitting loop) can trust it. 
+
+MODELMAKER_MASTER_MONOLITH
+
+// refpack/axisMapping.ts
+import type { ViewAxis } from "./types";
+
+export function localToWorld(axis: ViewAxis, u: number, v: number, constantPos: number): [number, number, number] {
+  switch (axis) {
+    case "TOP":   return [u, constantPos, -v];
+    case "SIDE":  return [u, -v, constantPos];
+    case "FRONT": return [constantPos, -v, u];
+    case "REAR":  return [constantPos, -v, -u];
+  }
+}
+
+ReferencePlane component (R3F): renders one calibrated view
+
+Key behaviors:
+
+Plane geometry size in meters from pxPerMeter + image dimensions. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Texture flipY = false (so your pixel-space clicks don’t invert unexpectedly). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Apply a 2D rotation about the plane normal to “straighten” the centerline (horizontal for TOP/SIDE; vertical for FRONT/REAR).
+
+// refpack/ReferencePlane.tsx
+import * as THREE from "three";
+import { useMemo } from "react";
+import { useLoader } from "@react-three/fiber";
+import type { ViewDef, ViewAxis } from "./types";
+import { centerlineAngle } from "./math";
+
+function desiredAngle(axis: ViewAxis) {
+  // TOP/SIDE: want centerline horizontal (+u). FRONT/REAR: want centerline vertical (+v) in image space.
+  return (axis === "TOP" || axis === "SIDE") ? 0 : Math.PI / 2;
+}
+
+function baseOrientation(axis: ViewAxis) {
+  // Start from PlaneGeometry in XY with normal +Z.
+  // Return Euler to orient plane into world “view plane”.
+  switch (axis) {
+    case "TOP":   return new THREE.Euler(-Math.PI / 2, 0, 0);      // XY -> XZ (normal +Y)
+    case "SIDE":  return new THREE.Euler(0, 0, 0);                 // XY at constant Z
+    case "FRONT": return new THREE.Euler(0,  Math.PI / 2, 0);      // XY -> YZ (normal +X)
+    case "REAR":  return new THREE.Euler(0, -Math.PI / 2, 0);      // XY -> YZ (normal -X)
+  }
+}
+
+export function ReferencePlane(props: {
+  view: ViewDef;
+  imageUrl: string;              // resolved absolute URL for texture
+  imageSizePx: { w: number; h: number };
+  constantPos: number;           // Y for TOP, Z for SIDE, X for FRONT/REAR
+}) {
+  const { view, imageUrl, imageSizePx, constantPos } = props;
+  const tex = useLoader(THREE.TextureLoader, imageUrl);
+
+  const geom = useMemo(() => {
+    const mpp = 1 / view.cal.pxPerMeter;
+    const Wm = imageSizePx.w * mpp;
+    const Hm = imageSizePx.h * mpp;
+    return new THREE.PlaneGeometry(Wm, Hm);
+  }, [imageSizePx.w, imageSizePx.h, view.cal.pxPerMeter]);
+
+  const mat = useMemo(() => {
+    tex.flipY = false;
+    tex.needsUpdate = true;
+    return new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: view.opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+  }, [tex, view.opacity]);
+
+  const rot = useMemo(() => {
+    const theta = centerlineAngle(view.cal);
+    const r = desiredAngle(view.axis) - theta; // rotate so centerline aligns to desired axis
+    const base = baseOrientation(view.axis);
+    // Apply as Z-rotation in local plane space AFTER base orientation:
+    return new THREE.Euler(base.x, base.y, base.z + r);
+  }, [view.axis, view.cal]);
+
+  const pos = useMemo<[number, number, number]>(() => {
+    switch (view.axis) {
+      case "TOP":   return [0, constantPos, 0];
+      case "SIDE":  return [0, 0, constantPos];
+      case "FRONT": return [constantPos, 0, 0];
+      case "REAR":  return [constantPos, 0, 0];
+    }
+  }, [view.axis, constantPos]);
+
+  return <mesh geometry={geom} material={mat} position={pos} rotation={rot} />;
+}
+
+Calibration UI (the “tight tool” version)
+
+Per view, you collect exactly the clicks you described:
+
+scale bar endpoints → pxPerMeter
+
+centerline endpoints → centerlinePx
+
+anchors → anchorA_Px, anchorB_Px
+
+optional origin (else default) 
+
+MODELMAKER_MASTER_MONOLITH
+
+Implementation detail that keeps this sane: do calibration in a simple 2D overlay first (image element + canvas), store pixels, then feed the pack to 3D. That prevents 3D picking from becoming your first source of bugs.
+
+Acceptance checks (so Step 1 is “done”)
+
+Reload the same pack.json and the planes land identically (no drift).
+
+If the user measures a known 1m bar, the plane’s meter size matches: Wm = Wpx / pxPerMeter, Hm = Hpx / pxPerMeter. 
+
+MODELMAKER_MASTER_MONOLITH
+
+TOP/SIDE centerlines are straight along +X; FRONT/REAR centerlines are straight vertical (after the rotation rule).
+
+Axis mapping matches your canonical frame (X forward, Y up, Z right). 
+
+MODELMAKER_MASTER_MONOLITH
+
+If you want me to continue immediately, the next “lock-in” move is: once ReferencePack planes are stable, we build the curve extraction targets (B(x), K(x), D(x)) and a first pass of Curve-First base mesh generation—but only after Step 1 passes the acceptance checks above. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Sources
+proceed
+Thought for 1m 27s
+
+Alright — next we turn “draw a curve” into deterministic topology insertion (not post-remesh). This is the core leap your notes already outline: SharedBoundary + PANP + patch templates are the “topology compiler.” 
+
+orthobuilder
+
+1) The seam object pattern: unify Monolith + OrthoBuilder
+
+ModelMaker already proves the invariant: one authoritative seam object feeds every dependent surface so cracks are impossible. In the monolith, that’s the CockpitEdgeSampler: no node is allowed to infer the edge independently. 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+Your OrthoBuilder equivalent is the SharedBoundary: it is owned once, referenced by multiple patches, and carries the single boundary truth (including port-locked parameterization). 
+
+orthobuilder
+
+So we do this explicitly:
+
+SharedBoundary = seam truth (topology-level entity)
+
+BoundarySampler = the runtime sampler for that boundary (frames, tangents, normals, arc-length, etc.)
+
+Patch templates = deterministic quad emitters that consume SharedBoundary/BoundarySampler
+
+This matches the cockpit “no-crack guarantee” architecture, but generalized to all topology.
+
+2) Non-negotiable invariants (your “perfect retopo” definition)
+A) Curves are constraints, not decoration
+
+A new drawn curve becomes a SharedBoundary immediately (or a SharedBoundary segment if open). That’s the “topology insertion.”
+
+B) No loop sliding, ever
+
+Every SharedBoundary is port-parameterized (PANP): segments between named ports, normalized parameter within each segment, and port→UV pinning. 
+
+orthobuilder
+
+C) Lift is exact-policy, not heuristic
+
+Each curve has an explicit lift_rule (SurfaceProject / MultiViewFit / Hybrid). 
+
+orthobuilder
+
+
+And each curve has truth_mode: AUTHORITATIVE / DERIVED / HYBRID. 
+
+orthobuilder
+
+D) Retopology is template emission (local recompilation)
+
+No global “optimize a triangle soup.” Instead:
+
+insert boundary → update patch graph topology → recompile only affected patches → emit structured quads.
+
+3) The minimal milestone that proves the whole system
+
+We implement the smallest loop where everything is obviously compiler-pure:
+
+Milestone 1: “Draw closed loop → perfect quad rings” (AnnularQuadPatch)
+
+Underform: analytic sphere (closed-form SDF; zero ambiguity).
+
+Draw a closed 2D curve in any ortho.
+
+Lift to a canonical 3D curve using that curve’s lift_rule (SurfaceProject is enough here). 
+
+orthobuilder
+
+Promote it to SharedBoundary_LoopA with ports + PANP.
+
+Create SharedBoundary_LoopB (for the “outer” loop). For the sphere demo this can be the equator or an initial default loop.
+
+Compile: AnnularQuadPatch(outerBoundary, innerBoundary) exactly as you specified. 
+
+orthobuilder
+
+u goes around the loop
+
+v goes radially outer→inner
+
+seam placement is explicit, and port→u locks keep expression/operators stable forever. 
+
+orthobuilder
+
+Emit structured quads: (M around) × (R radial) with shared vertices on both boundaries.
+
+If this works interactively (draw → instant clean rings), you’ve proven:
+new curve ⇒ topology ⇒ perfect quads ⇒ no drift.
+
+Milestone 2: Add a second loop → deterministic re-topology
+
+Add another closed curve inside:
+
+patch graph updates (annulus split into two annuli)
+
+only those patches rebuild
+
+quad flow stays stable because ports/seams remain pinned.
+
+Milestone 3: Open curve insertion → RibbonPatch split
+
+Draw an open curve from boundary-to-boundary:
+
+becomes a SharedBoundary segment
+
+splits one patch into two
+
+each side becomes a RibbonPatch / CoonsPatch variant
+
+again: local recompilation only.
+
+4) Core data structures (just enough to implement)
+SharedBoundary
+
+id
+
+curve3D_ref (canonical, editable)
+
+ports[] (named anchors)
+
+panp_segments[] (portA→portB, normalized s)
+
+u_pins (portName → u in [0,1]) for seam stability 
+
+orthobuilder
+
+optional: truth_mode, lift_rule 
+
+orthobuilder
+
+BoundarySampler (same role as CockpitEdgeSampler)
+
+A runtime object that every patch must use (no independent inference), mirroring the monolith contract. 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+It outputs frames[k] with:
+
+u = k/M
+
+p(u) position
+
+tangent + stable local frame (for profiles, offsets, thickness)
+
+optional dirty-range acceleration (same spirit as monolith’s fast updates)
+
+Patch templates
+
+AnnularQuadPatch(outerSB, innerSB)
+
+RibbonPatch(boundarySegmentSB, targetSB or guide)
+
+later: Coons / Gordon / loft/sweep templates
+
+Each patch has a stable (u,v) domain (not triangles). 
+
+orthobuilder
+
+5) The compile loop (what runs when you drag)
+
+You already wrote the exact pipeline; we implement it literally: 
+
+orthobuilder
+
+Update 2D curve in that ortho
+
+Lift to 3D via lift_rule (with port locks)
+
+Update canonical C3D control points
+
+Rebuild dependent SharedBoundaries + boundary samplers
+
+Rebuild only dependent patches (boundaries first, interior second)
+
+Regenerate derived guides / diagnostics
+
+Re-emit quads for affected patches only
+
+That’s how you get “Illustrator-fast” behavior with 3D correctness. 
+
+orthobuilder
+
+6) What “perfect” means computationally (so we don’t betray the paradigm)
+
+Exactness lives in the representation: curves as parametric objects + constraints + ports (not baked triangles).
+
+When we “solve,” it’s deterministic root-finding to chosen epsilon, and we store the policy + constraint, not a one-off sampled artifact.
+
+Mesh is a view emitted from templates; topology is never “recovered” from triangles after the fact.
+
+If you want the next step in the most concrete form: I’ll write the AnnularQuadPatch emitter (vertex/UV/index rules + port seam locking) and the SharedBoundary + BoundarySampler interfaces in TypeScript, in the exact “sampler contract” style the monolith uses.
+
+Sources
+proceed
+Thought for 1m 17s
+The “perfect retopo” invariant we’re now implementing
+
+Your notes already specify the core contract:
+
+SharedBoundary is a first-class topology entity referenced by multiple patches (not “two edges that hopefully match”). 
+
+orthobuilder
+
+PANP (ports + normalized segment parameter) pins u at ports and forces monotonic mapping between them, preventing loop sliding/drift. 
+
+orthobuilder
+
+AnnularQuadPatch: u goes around, v goes radial, seam placement is explicit, and port→UV locking makes operators stable forever. 
+
+orthobuilder
+
+And you already have the same “single sampler used by everyone” pattern in ModelMaker (no cracks because every subsystem references the same boundary frames). 
+
+MODELMAKER_MASTER_MONOLITH
+
+So: new curve ⇒ promoted to SharedBoundary ⇒ patch graph updates ⇒ template emits quads deterministically. No global remesh.
+
+1) Core data model: ports, PANP, SharedBoundary
+// topo_types.ts
+export type Vec2 = { x: number; y: number };
+export type Vec3 = { x: number; y: number; z: number };
+
+export const V3 = {
+  add: (a: Vec3, b: Vec3): Vec3 => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }),
+  sub: (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }),
+  mul: (a: Vec3, s: number): Vec3 => ({ x: a.x * s, y: a.y * s, z: a.z * s }),
+  dot: (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z,
+  len: (a: Vec3): number => Math.hypot(a.x, a.y, a.z),
+  norm: (a: Vec3): Vec3 => {
+    const l = Math.hypot(a.x, a.y, a.z) || 1;
+    return { x: a.x / l, y: a.y / l, z: a.z / l };
+  },
+  lerp: (a: Vec3, b: Vec3, t: number): Vec3 => ({
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    z: a.z + (b.z - a.z) * t,
+  }),
+};
+
+export type TruthMode = "AUTHORITATIVE" | "DERIVED" | "HYBRID";
+
+export type Port = {
+  name: string;          // e.g. P_commissure_L
+  lock: number;          // 0..1 (1 = hard)
+  // Optional: pin to a canonical u (for SharedBoundary loops)
+  uPin?: number;         // e.g. 0, 0.25, 0.5, 0.75
+};
+
+export type CurveSegmentRef = { fromPort: string; toPort: string };
+
+// Canonical: store the curve in bind space as param C3D(t)
+export interface Curve3D {
+  id: string;
+  truthMode: TruthMode;
+  ports: Port[];
+  // Evaluate in canonical parameter t ∈ [0,1]
+  eval(t: number): Vec3;
+  // Optional: arc-length approximation for mapping (internal use only)
+  approxArcLength?(steps?: number): number;
+  // Find t for a named port (canonical)
+  tAtPort(name: string): number;
+}
+
+PANP sampler: “pinned u, monotonic between”
+
+This is the “no loop sliding” mechanism: ports define invariants, everything between them is normalized and monotonic. 
+
+orthobuilder
+
+// panp_sampler.ts
+import { Vec3, V3, Curve3D, Port } from "./topo_types";
+
+export type BoundaryFrame = {
+  k: number;      // sample index
+  u: number;      // [0,1) around loop (canonical)
+  p: Vec3;        // position
+  // Optional: additional per-frame data (tangent, normal, etc.)
+};
+
+export type SharedBoundarySampler = {
+  M: number;
+  frames: BoundaryFrame[];
+  // helper: find exact frame indices near a u-span (optional)
+  kRangeForU?: (uLo: number, uHi: number) => { k0: number; k1: number };
+};
+
+// Build a u-grid that is deterministic and respects pinned ports.
+// - includes seam u=0
+// - includes all pinned u values
+// - fills between pins with uniform subdivisions
+export function buildPinnedUGrid(params: {
+  M: number;                 // desired around-loop resolution
+  ports: Port[];             // ports with uPin
+  seamUPin: number;          // usually 0
+}): number[] {
+  const { M, ports, seamUPin } = params;
+
+  const pins = new Set<number>();
+  pins.add(wrap01(seamUPin));
+
+  for (const p of ports) if (p.uPin !== undefined) pins.add(wrap01(p.uPin));
+
+  // Sort pins in [0,1)
+  const pinList = [...pins].sort((a, b) => a - b);
+
+  // Ensure 0 is first (canonical seam)
+  if (pinList[0] !== 0) {
+    // rotate list so that 0 is first if present; else insert 0
+    if (pinList.includes(0)) {
+      while (pinList[0] !== 0) pinList.push(pinList.shift()!);
+    } else {
+      pinList.unshift(0);
+    }
+  }
+
+  // Allocate samples across spans proportional to span length
+  const spans: { a: number; b: number; len: number }[] = [];
+  for (let i = 0; i < pinList.length; i++) {
+    const a = pinList[i];
+    const b = pinList[(i + 1) % pinList.length];
+    const len = (b >= a) ? (b - a) : (1 - a + b);
+    spans.push({ a, b, len });
+  }
+
+  const totalLen = spans.reduce((s, t) => s + t.len, 0) || 1;
+  const rawCounts = spans.map(sp => sp.len / totalLen * M);
+
+  // Deterministic rounding: floor + distribute remainder by largest fractional parts
+  const counts = rawCounts.map(Math.floor);
+  let used = counts.reduce((s, c) => s + c, 0);
+  let rem = Math.max(0, M - used);
+
+  const frac = rawCounts.map((v, i) => ({ i, f: v - Math.floor(v) }))
+                        .sort((a, b) => b.f - a.f);
+  for (let r = 0; r < rem; r++) counts[frac[r % frac.length].i]++;
+
+  // Build grid: include pin at start of each span, then interior points (excluding end pin)
+  const grid: number[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const { a, b } = spans[i];
+    const n = Math.max(1, counts[i]); // at least 1 step per span
+    for (let j = 0; j < n; j++) {
+      const t = j / n; // excludes end pin (t=1)
+      const u = wrap01(a + spanDelta(a, b) * t);
+      grid.push(u);
+    }
+  }
+
+  // Ensure exact seam 0 exists as first element
+  grid.sort((x, y) => x - y);
+  // rotate so first is 0
+  while (grid.length && grid[0] !== 0) grid.push(grid.shift()!);
+
+  return grid;
+}
+
+function spanDelta(a: number, b: number): number {
+  return (b >= a) ? (b - a) : (1 - a + b);
+}
+function wrap01(u: number): number {
+  u = u % 1;
+  if (u < 0) u += 1;
+  // snap tiny floating noise
+  if (Math.abs(u) < 1e-12) return 0;
+  if (Math.abs(u - 1) < 1e-12) return 0;
+  return u;
+}
+
+// Sample a closed boundary by u-grid, using a canonical curve C3D(t) plus an optional u->t map.
+// If you already define u == t (common for authored loops), just use t=u.
+export function sampleBoundaryByPinnedU(params: {
+  M: number;
+  uGrid: number[];
+  curve: Curve3D;
+  uToT?: (u: number) => number;
+}): SharedBoundarySampler {
+  const { M, uGrid, curve } = params;
+  const uToT = params.uToT ?? ((u: number) => u);
+
+  const frames: BoundaryFrame[] = [];
+  for (let k = 0; k < uGrid.length; k++) {
+    const u = uGrid[k];
+    const t = uToT(u);
+    frames.push({ k, u, p: curve.eval(t) });
+  }
+
+  return { M, frames };
+}
+
+2) SharedBoundary: one owner, many patches
+
+This is exactly the “not two edges that hopefully match” rule. 
+
+orthobuilder
+
+// shared_boundary.ts
+import { Curve3D, Port } from "./topo_types";
+import { SharedBoundarySampler, buildPinnedUGrid, sampleBoundaryByPinnedU } from "./panp_sampler";
+
+export type SharedBoundary = {
+  id: string;
+  truthMode: "AUTHORITATIVE" | "DERIVED" | "HYBRID";
+  curve: Curve3D;        // canonical curve in bind space
+  ports: Port[];         // includes uPin ports
+  seamPort: string;      // e.g. P_commissure_L
+  // Cached sampler (like CockpitEdgeSampler pattern)
+  sampler?: SharedBoundarySampler;
+};
+
+export function rebuildBoundarySampler(boundary: SharedBoundary, M: number): SharedBoundarySampler {
+  const seamU =
+    boundary.ports.find(p => p.name === boundary.seamPort)?.uPin ?? 0;
+
+  const uGrid = buildPinnedUGrid({
+    M,
+    ports: boundary.ports,
+    seamUPin: seamU,
+  });
+
+  const sampler = sampleBoundaryByPinnedU({
+    M,
+    uGrid,
+    curve: boundary.curve,
+  });
+
+  boundary.sampler = sampler;
+  return sampler;
+}
+
+
+This is the generalized “EdgeSamplerNode” idea: build once per rebuild pass, everyone consumes the same frames. 
+
+MODELMAKER_MASTER_MONOLITH
+
+3) AnnularQuadPatch: template emitter (u around, v radial, seam explicit)
+
+This is straight from your spec. 
+
+orthobuilder
+
+Mesh output type
+// mesh_types.ts
+import { Vec2, Vec3 } from "./topo_types";
+
+export type Quad = [number, number, number, number];
+
+export type MeshData = {
+  positions: Vec3[];
+  uvs: Vec2[];
+  quads: Quad[];
+  // optional: normals, tangents, groups, seam indices, etc.
+};
+
+Annular emitter (boundary-only + interior solve hook)
+
+We do two layers:
+
+Deterministic topology emission (grid indices, seams, pinned u).
+
+Interior positioning rule:
+
+For analytic surfaces (sphere milestone) we can do exact.
+
+For general surfaces, you plug a PatchInteriorSolver that enforces “on-surface” + fairness (your “light relaxation” step). 
+
+orthobuilder
+
+// annular_quad_patch.ts
+import { MeshData, Quad } from "./mesh_types";
+import { Vec2, Vec3, V3 } from "./topo_types";
+import { SharedBoundary, rebuildBoundarySampler } from "./shared_boundary";
+
+export type PatchInteriorSolver = (params: {
+  outerPoint: Vec3;
+  innerPoint: Vec3;
+  u: number;     // around
+  v: number;     // radial
+}) => Vec3;
+
+// Default interior: linear in 3D (NOT on-surface for curved underforms; use only as placeholder)
+export const linearInterior: PatchInteriorSolver = ({ outerPoint, innerPoint, v }) =>
+  V3.lerp(outerPoint, innerPoint, v);
+
+export function emitAnnularQuadPatch(params: {
+  outer: SharedBoundary;
+  inner: SharedBoundary;
+  M: number;     // around resolution
+  N: number;     // radial resolution (>=2)
+  solver?: PatchInteriorSolver;
+}): MeshData {
+  const { outer, inner, M, N } = params;
+  const solver = params.solver ?? linearInterior;
+
+  const so = outer.sampler ?? rebuildBoundarySampler(outer, M);
+  const si = inner.sampler ?? rebuildBoundarySampler(inner, M);
+
+  if (so.frames.length !== si.frames.length) {
+    throw new Error(`AnnularQuadPatch requires matched u-grid. Outer=${so.frames.length}, Inner=${si.frames.length}`);
+  }
+
+  const positions: Vec3[] = [];
+  const uvs: Vec2[] = [];
+  const quads: Quad[] = [];
+
+  // Vertex indexing: idx(uIndex, vIndex) where uIndex in [0..M-1], vIndex in [0..N-1]
+  const idx = (uI: number, vI: number) => uI * N + vI;
+
+  for (let uI = 0; uI < so.frames.length; uI++) {
+    const u = so.frames[uI].u;
+    const pOuter = so.frames[uI].p;
+    const pInner = si.frames[uI].p;
+
+    for (let vI = 0; vI < N; vI++) {
+      const v = (N === 1) ? 0 : vI / (N - 1);
+      const p = solver({ outerPoint: pOuter, innerPoint: pInner, u, v });
+
+      positions.push(p);
+      uvs.push({ x: u, y: v });
+    }
+  }
+
+  // Quads: (uI,vI) cell => four corners
+  for (let uI = 0; uI < so.frames.length; uI++) {
+    const uN = (uI + 1) % so.frames.length;
+    for (let vI = 0; vI < N - 1; vI++) {
+      const a = idx(uI, vI);
+      const b = idx(uN, vI);
+      const c = idx(uN, vI + 1);
+      const d = idx(uI, vI + 1);
+      quads.push([a, b, c, d]);
+    }
+  }
+
+  return { positions, uvs, quads };
+}
+
+
+This is the “compiler template”: topology is deterministic, because the u-grid is pinned by ports and seam. That’s the “Port → UV locking (the magic)” clause you wrote. 
+
+orthobuilder
+
+4) Sphere milestone: exact annular patch (no approximation)
+
+Your “prove it on a sphere” milestone is perfect because we can make the interior solver exact.
+
+If the user draws circles in the TOP ortho (radius = a), those are cylinders intersecting the sphere, producing latitude circles. We can represent the boundary exactly and fill the annulus exactly with spherical coordinates.
+
+// sphere_annulus_exact.ts
+import { Vec3 } from "./topo_types";
+import { PatchInteriorSolver } from "./annular_quad_patch";
+
+// Exact sphere surface point for (u around, theta polar)
+export function spherePoint(r: number, u: number, theta: number): Vec3 {
+  const phi = 2 * Math.PI * u;
+  const s = Math.sin(theta);
+  const c = Math.cos(theta);
+  return {
+    x: r * s * Math.cos(phi),
+    y: r * c,
+    z: r * s * Math.sin(phi),
+  };
+}
+
+// Convert TOP-drawn circle radius a to polar theta where sin(theta)=a/r
+export function thetaFromTopRadius(r: number, a: number): number {
+  const t = Math.asin(clamp(a / r, -1, 1));
+  // theta in [0,pi], asin gives [-pi/2,pi/2]; pick top hemisphere band if desired
+  return t; // top hemisphere near +y if theta small? (depends on your convention)
+}
+
+function clamp(x: number, a: number, b: number): number {
+  return Math.max(a, Math.min(b, x));
+}
+
+// Exact solver for AnnularQuadPatch on a sphere annulus between thetaOuter and thetaInner.
+// (u is shared; v lerps theta, guaranteeing points stay on sphere)
+export function makeSphereAnnulusSolver(r: number, thetaOuter: number, thetaInner: number): PatchInteriorSolver {
+  return ({ u, v }) => {
+    const theta = thetaOuter + (thetaInner - thetaOuter) * v;
+    return spherePoint(r, u, theta);
+  };
+}
+
+
+Once you wire:
+
+outer boundary = “top circle radius aOuter”
+
+inner boundary = “top circle radius aInner”
+
+seam pin = a named port at u=0
+…you get instant perfect quad rings with zero drift, and every additional inserted circle becomes another SharedBoundary and another deterministic patch emission. That’s exactly what your AnnularQuadPatch description is promising. 
+
+orthobuilder
+
+5) The update pipeline: only rebuild dependent patches
+
+This is already specified: on edit, lift, rebuild dependent boundaries, re-solve interiors, regenerate guides. 
+
+orthobuilder
+
+// topo_update_pipeline.ts
+import { SharedBoundary, rebuildBoundarySampler } from "./shared_boundary";
+import { emitAnnularQuadPatch } from "./annular_quad_patch";
+
+export type PatchId = string;
+
+export type PatchNode =
+  | { id: PatchId; type: "AnnularQuadPatch"; outer: SharedBoundary; inner: SharedBoundary; M: number; N: number; };
+
+export type PatchGraph = {
+  patches: PatchNode[];
+  // dependency index: boundaryId -> patchIds
+  deps: Map<string, PatchId[]>;
+};
+
+export function rebuildAfterBoundaryEdit(params: {
+  boundaryIdsDirty: string[];
+  graph: PatchGraph;
+  samplerM: number;
+}): Map<PatchId, any /*MeshData*/> {
+  const { boundaryIdsDirty, graph, samplerM } = params;
+
+  // 1) rebuild samplers for dirty SharedBoundaries
+  for (const bid of boundaryIdsDirty) {
+    // find boundary objects referenced by patches (simple approach)
+    for (const p of graph.patches) {
+      if (p.type === "AnnularQuadPatch") {
+        if (p.outer.id === bid) rebuildBoundarySampler(p.outer, samplerM);
+        if (p.inner.id === bid) rebuildBoundarySampler(p.inner, samplerM);
+      }
+    }
+  }
+
+  // 2) rebuild only dependent patches
+  const out = new Map<PatchId, any>();
+  const patchIds = new Set<PatchId>();
+  for (const bid of boundaryIdsDirty) {
+    const ds = graph.deps.get(bid) ?? [];
+    for (const pid of ds) patchIds.add(pid);
+  }
+
+  for (const p of graph.patches) {
+    if (!patchIds.has(p.id)) continue;
+
+    if (p.type === "AnnularQuadPatch") {
+      const mesh = emitAnnularQuadPatch({
+        outer: p.outer,
+        inner: p.inner,
+        M: p.M,
+        N: p.N,
+        // solver plugged elsewhere (sphere exact / general relaxation)
+      });
+      out.set(p.id, mesh);
+    }
+  }
+
+  return out;
+}
+
+6) How this becomes “perfect retopo when new lines are added”
+
+When a new curve is drawn on the object:
+
+It is promoted to SharedBoundary (not an overlay). 
+
+orthobuilder
+
+Ports are created/snapped and optionally u-pinned (PANP). 
+
+orthobuilder
+
+Patch graph performs a topological insertion:
+
+closed curve inside a region ⇒ create annulus/rings (AnnularQuadPatch)
+
+open curve across a patch ⇒ create ribbon split (RibbonPatch in your notes) 
+
+orthobuilder
+
+Templates emit quads deterministically (no global optimizer), and every subsystem reads the same boundary sampler frames (no cracks). 
+
+MODELMAKER_MASTER_MONOLITH
+
+That is “perfect retopo” in your sense: topology is authored by constraints + templates, not discovered by remeshing.
+
+Next “proceed” deliverable (immediate, if you want it in the same style)
+
+RibbonPatch emitter + split operator (open-curve insertion that yields perfect quad strips, with port-pinned u on the boundary segment and v across thickness), matching your eyelid “two ribbon patches + annulus” template. 
+
+orthobuilder
+
+Sources
+proceed
+Thought for 1m 40s
+Face Module v1: curves-as-truth → patches → rig/expression compiler
+
+Your foundational rule holds: an ortho Bézier isn’t “2D geometry,” it’s a 3D constraint curtain (extruded along the missing axis), and the real model is an operator graph that compiles to surface/mesh at any resolution. 
+
+orthobuilder
+
+
+Also: “Connect” isn’t meshing; it’s emitting an implicit/parametric surface operator node (loft/sweep/revolve/fill/fillet/etc.). 
+
+orthobuilder
+
+Below is a complete FaceBase_v1 schema that matches that paradigm, plus an ExpressionPack that turns sliders into deterministic curve/patch operators (so you can bake blendshapes or stay parametric).
+
+FaceBase_v1 Asset Schema (JSON-ish)
+{
+  "asset_id": "OrganicModule_FaceBase_v1",
+  "units": "m",
+  "symmetry": { "enabled": true, "plane": "XZ", "mirror_about": "Z=0", "asymmetry_slider": true },
+
+  "bind": {
+    "skeleton_space": "bone_local",
+    "bones": {
+      "head": { "id": "Head" },
+      "jaw":  { "id": "Jaw" },
+      "eye_L":{ "id": "Eye_L" },
+      "eye_R":{ "id": "Eye_R" }
+    },
+
+    "landmarks": {
+      "LM_skull_underform":  { "bone": "head", "type": "surface_ref" },
+
+      "LM_inner_canthus_L":  { "bone": "head", "type": "point" },
+      "LM_outer_canthus_L":  { "bone": "head", "type": "point" },
+      "LM_pupil_center_L":   { "bone": "eye_L","type": "point" },
+
+      "LM_mouth_corner_L":   { "bone": "jaw",  "type": "point" },
+      "LM_philtrum":         { "bone": "head", "type": "point" },
+      "LM_subnasale":        { "bone": "head", "type": "point" },
+      "LM_nose_tip":         { "bone": "head", "type": "point" },
+      "LM_alar_base_L":      { "bone": "head", "type": "point" },
+
+      "LM_chin":             { "bone": "jaw",  "type": "point" },
+      "LM_brow_inner_L":     { "bone": "head", "type": "point" },
+      "LM_brow_outer_L":     { "bone": "head", "type": "point" }
+    }
+  },
+
+  "curves": [
+    // ---------- EYE REGION (LEFT; right is mirrored) ----------
+    {
+      "id": "C_eye_socket_loop_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "EYE_SOCKET_BOUNDARY",
+      "bezier": { "closed": true, "knots": [] },
+      "attach": { "landmark": "LM_pupil_center_L", "mode": "soft_center_lock" },
+      "ports": [
+        { "name": "P_inner_canthus", "t": 0.08, "snap_to": "LM_inner_canthus_L" },
+        { "name": "P_outer_canthus", "t": 0.58, "snap_to": "LM_outer_canthus_L" }
+      ]
+    },
+    {
+      "id": "C_upper_lid_loop_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "LID_UPPER_LOOP",
+      "bezier": { "closed": true, "knots": [] },
+      "ports": [
+        { "name": "P_inner", "t": 0.0, "snap_to": "LM_inner_canthus_L" },
+        { "name": "P_outer", "t": 0.5, "snap_to": "LM_outer_canthus_L" }
+      ]
+    },
+    {
+      "id": "C_lower_lid_loop_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "LID_LOWER_LOOP",
+      "bezier": { "closed": true, "knots": [] }
+    },
+    {
+      "id": "C_lid_profile_SIDE_L",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "LID_PROFILE",
+      "bezier": { "closed": false, "knots": [] }
+    },
+    {
+      "id": "C_eyelid_crease_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "FEATURE_CREASE",
+      "bezier": { "closed": false, "knots": [] }
+    },
+
+    // ---------- MOUTH REGION ----------
+    {
+      "id": "C_outer_lip_loop_FRONT",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "LIP_OUTER_LOOP",
+      "bezier": { "closed": true, "knots": [] },
+      "ports": [
+        { "name": "P_corner_L", "t": 0.18, "snap_to": "LM_mouth_corner_L" },
+        { "name": "P_philtrum", "t": 0.50, "snap_to": "LM_philtrum" }
+      ]
+    },
+    {
+      "id": "C_inner_lip_loop_FRONT",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "LIP_INNER_LOOP",
+      "bezier": { "closed": true, "knots": [] }
+    },
+    {
+      "id": "C_upper_lip_profile_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "LIP_UPPER_PROFILE",
+      "bezier": { "closed": false, "knots": [] }
+    },
+    {
+      "id": "C_lower_lip_profile_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "LIP_LOWER_PROFILE",
+      "bezier": { "closed": false, "knots": [] }
+    },
+    {
+      "id": "C_nasolabial_fold_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "FEATURE_FOLD",
+      "bezier": { "closed": false, "knots": [] }
+    },
+    {
+      "id": "C_marionette_fold_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "FEATURE_FOLD",
+      "bezier": { "closed": false, "knots": [] }
+    },
+
+    // ---------- NOSE ----------
+    {
+      "id": "C_nose_bridge_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "NOSE_BRIDGE_PROFILE",
+      "bezier": { "closed": false, "knots": [] }
+    },
+    {
+      "id": "C_nose_tip_PROFILE_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "NOSE_TIP_PROFILE",
+      "bezier": { "closed": false, "knots": [] },
+      "attach": { "landmark": "LM_nose_tip", "mode": "soft_lock" }
+    },
+    {
+      "id": "C_alar_curve_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "NOSE_ALAR",
+      "bezier": { "closed": false, "knots": [] },
+      "attach": { "landmark": "LM_alar_base_L", "mode": "endpoint_lock" }
+    },
+    {
+      "id": "C_columella_PROFILE_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "NOSE_COLUMELLA",
+      "bezier": { "closed": false, "knots": [] }
+    },
+
+    // ---------- BROW + JAWLINE ----------
+    {
+      "id": "C_brow_arc_FRONT_L",
+      "space": { "type": "ortho", "view": "FRONT", "axes": ["Z","Y"] },
+      "role": "BROW_RIDGE",
+      "bezier": { "closed": false, "knots": [] },
+      "attach": { "landmark": "LM_brow_inner_L", "mode": "soft_lock" }
+    },
+    {
+      "id": "C_jawline_SIDE",
+      "space": { "type": "ortho", "view": "SIDE", "axes": ["X","Y"] },
+      "role": "JAWLINE_PROFILE",
+      "bezier": { "closed": false, "knots": [] },
+      "attach": { "landmark": "LM_chin", "mode": "soft_lock" }
+    },
+
+    // ---------- OPTIONAL FLOW GUIDES (3D) ----------
+    { "id": "C_flow_orbicularis_oris_3D", "space": { "type": "3d" }, "role": "FLOW_GUIDE", "bezier": { "closed": false, "knots": [] } },
+    { "id": "C_flow_nasolabial_3D",       "space": { "type": "3d" }, "role": "FLOW_GUIDE", "bezier": { "closed": false, "knots": [] } }
+  ],
+
+  "constraints": [
+    { "type": "SYMMETRY_MIRROR", "max_offset": 0.01, "asymmetry_slider": "S_asymmetry" },
+
+    // eye: keep canthi aligned between socket + lids
+    { "type": "COINCIDENT_PORTS", "a": "C_eye_socket_loop_FRONT_L:P_inner_canthus", "b": "C_upper_lid_loop_FRONT_L:P_inner" },
+    { "type": "COINCIDENT_PORTS", "a": "C_eye_socket_loop_FRONT_L:P_outer_canthus", "b": "C_upper_lid_loop_FRONT_L:P_outer" },
+
+    // mouth: corners + philtrum locks
+    { "type": "ANCHOR_LOCK", "target": "C_outer_lip_loop_FRONT:P_corner_L", "mode": "jaw_relative" },
+    { "type": "ANCHOR_LOCK", "target": "C_outer_lip_loop_FRONT:P_philtrum", "mode": "head_relative" },
+
+    // continuity defaults
+    { "type": "TANGENCY_DEFAULT", "applies_to_roles": ["LIP_OUTER_LOOP","LID_UPPER_LOOP","LID_LOWER_LOOP"], "grade": "G1" }
+  ],
+
+  "operators": [
+    {
+      "id": "OP0_UnderformSkull",
+      "type": "UnderformRef",
+      "inputs": { "surface": "LM_skull_underform" },
+      "outputs": { "underform": "Surface3D" }
+    },
+
+    // ---------- EYE PATCHES ----------
+    {
+      "id": "OP1_EyelidPatch_L",
+      "type": "BoundaryPatch",
+      "inputs": {
+        "outer": "C_eye_socket_loop_FRONT_L",
+        "upper": "C_upper_lid_loop_FRONT_L",
+        "lower": "C_lower_lid_loop_FRONT_L"
+      },
+      "params": { "method": "GordonPatch", "continuity": "C1", "iso_u": 10, "iso_v": 10 },
+      "outputs": { "patch": "ParamSurface(u,v)", "uv": "UVFrame" }
+    },
+    {
+      "id": "OP2_EyelidThickness_L",
+      "type": "ProfileThicken",
+      "inputs": { "patch": "@OP1_EyelidPatch_L.outputs.patch", "profile": "C_lid_profile_SIDE_L" },
+      "params": { "thickness_mm": 1.5, "rim_bias": 0.7, "preserve_margin": true },
+      "outputs": { "patch_thick": "ParamSurface" }
+    },
+    {
+      "id": "OP3_EyelidCrease_L",
+      "type": "CreaseCarve",
+      "inputs": { "patch": "@OP2_EyelidThickness_L.outputs.patch_thick", "curve": "C_eyelid_crease_FRONT_L" },
+      "params": { "depth_mm": 1.2, "width_mm": 6.0, "softness": 0.7 },
+      "outputs": { "patch_featured": "ParamSurface" }
+    },
+
+    // ---------- LIPS PATCH ----------
+    {
+      "id": "OP4_LipPatch",
+      "type": "LoopPatch",
+      "inputs": { "outer": "C_outer_lip_loop_FRONT", "inner": "C_inner_lip_loop_FRONT" },
+      "params": { "continuity": "C1", "uv_mode": "ring", "rim_preserve": true },
+      "outputs": { "patch": "ParamSurface(u,v)", "uv": "UVFrame" }
+    },
+    {
+      "id": "OP5_LipProfiles",
+      "type": "ProfileWarp",
+      "inputs": {
+        "patch": "@OP4_LipPatch.outputs.patch",
+        "upper_profile": "C_upper_lip_profile_SIDE",
+        "lower_profile": "C_lower_lip_profile_SIDE"
+      },
+      "params": { "upper_strength": 1.0, "lower_strength": 1.0, "volume_preserve": 0.8 },
+      "outputs": { "patch_shaped": "ParamSurface" }
+    },
+
+    // ---------- NOSE PATCH ----------
+    {
+      "id": "OP6_NosePatch",
+      "type": "ProfileLoft",
+      "inputs": {
+        "bridge_profile": "C_nose_bridge_SIDE",
+        "tip_profile": "C_nose_tip_PROFILE_SIDE",
+        "alar_left": "C_alar_curve_FRONT_L",
+        "columella": "C_columella_PROFILE_SIDE"
+      },
+      "params": { "continuity": "C1", "alar_softness": 0.6, "tip_round_mm": 2.5 },
+      "outputs": { "patch": "ParamSurface" }
+    },
+
+    // ---------- FOLDS (nasolabial + marionette) ----------
+    {
+      "id": "OP7_Folds",
+      "type": "FoldField",
+      "inputs": {
+        "underform": "@OP0_UnderformSkull.outputs.underform",
+        "folds": ["C_nasolabial_fold_FRONT_L","C_marionette_fold_FRONT_L"]
+      },
+      "params": { "depth_mm": 1.0, "width_mm": 10.0, "tension": 0.6 },
+      "outputs": { "displacement": "DispField3D" }
+    },
+
+    // ---------- CONFORM / FAIRING ----------
+    {
+      "id": "OP8_ConformToSkull",
+      "type": "Conform",
+      "inputs": {
+        "patches": [
+          "@OP3_EyelidCrease_L.outputs.patch_featured",
+          "@OP5_LipProfiles.outputs.patch_shaped",
+          "@OP6_NosePatch.outputs.patch"
+        ],
+        "underform": "@OP0_UnderformSkull.outputs.underform"
+      },
+      "params": { "wrap_strength": 0.9, "slide_tangent": true, "keep_boundaries": true },
+      "outputs": { "patches_wrapped": "PatchSet" }
+    },
+
+    // ---------- APPLY FOLD DISPLACEMENT ----------
+    {
+      "id": "OP9_ApplyFolds",
+      "type": "ApplyDisplacement",
+      "inputs": { "patches": "@OP8_ConformToSkull.outputs.patches_wrapped", "disp": "@OP7_Folds.outputs.displacement" },
+      "params": { "amount": 1.0, "mask_by_distance_mm": 25.0 },
+      "outputs": { "patches_final": "PatchSet" }
+    },
+
+    // ---------- FLOW MAP (for topology + micro detail alignment) ----------
+    {
+      "id": "OP10_FlowField",
+      "type": "FlowMap",
+      "inputs": { "patches": "@OP9_ApplyFolds.outputs.patches_final", "guides": ["C_flow_orbicularis_oris_3D","C_flow_nasolabial_3D"] },
+      "params": { "smooth": 0.85 },
+      "outputs": { "flow": "VectorFieldOnPatches" }
+    }
+  ],
+
+  "sliders": [
+    { "id": "S_asymmetry",        "min": 0.0, "max": 1.0, "default": 0.0 },
+
+    { "id": "S_eye_size",         "min": 0.7, "max": 1.3, "default": 1.0, "binds": ["C_eye_socket_loop_FRONT_L","C_upper_lid_loop_FRONT_L","C_lower_lid_loop_FRONT_L"] },
+    { "id": "S_lid_crease",       "min": 0.0, "max": 1.0, "default": 0.5, "binds": ["OP3_EyelidCrease_L.params.depth_mm"] },
+
+    { "id": "S_lip_fullness",     "min": 0.5, "max": 1.8, "default": 1.0, "binds": ["OP5_LipProfiles.params.upper_strength","OP5_LipProfiles.params.lower_strength"] },
+    { "id": "S_mouth_width",      "min": 0.7, "max": 1.3, "default": 1.0, "binds": ["C_outer_lip_loop_FRONT"] },
+
+    { "id": "S_nose_bridge",      "min": 0.7, "max": 1.4, "default": 1.0, "binds": ["C_nose_bridge_SIDE"] },
+    { "id": "S_nose_tip_round",   "min": 0.5, "max": 2.0, "default": 1.0, "binds": ["OP6_NosePatch.params.tip_round_mm"] },
+
+    { "id": "S_fold_depth",       "min": 0.0, "max": 2.0, "default": 1.0, "binds": ["OP7_Folds.params.depth_mm"] }
+  ],
+
+  "rigging": {
+    "weights": [
+      { "name": "W_head", "domain": "patch_uv", "fn": "1 - W_jaw" },
+      { "name": "W_jaw",  "domain": "patch_uv", "fn": "smoothstep(0.55,1.0,v) * smoothstep(0.2,0.9,u_jaw_region)" }
+    ],
+    "correctives": [
+      { "id": "CORR_jaw_open", "driver": { "bone": "jaw", "param": "open_deg", "range_deg": [0, 35] },
+        "effect": { "type": "FoldRelax", "targets": ["C_marionette_fold_FRONT_L"], "amount": 0.7 } }
+    ]
+  },
+
+  "detail_layers": [
+    { "id": "DL_pores",      "space": "patch_uv", "driven_by": "global_skin_detail" },
+    { "id": "DL_wrinkles",   "space": "patch_uv", "aligned_to": "@OP10_FlowField.outputs.flow", "driven_by": "expression_intensity" }
+  ],
+
+  "export": {
+    "mesh": {
+      "method": "quad_patch_meshing",
+      "target_edge_len": 0.004,
+      "curvature_adapt": true,
+      "feature_protect_curves": ["C_outer_lip_loop_FRONT","C_upper_lid_loop_FRONT_L","C_nasolabial_fold_FRONT_L"]
+    },
+    "uv": { "sets": ["UV0_patch"], "seams": ["lip_outer_loop","eye_socket_loop"] },
+    "bake": { "blendshapes": "optional", "normal_displacement": "optional" }
+  }
+}
+
+ExpressionPack_v1: sliders → curve/patch operators (FACS-like without the pain)
+
+Each expression is just a deterministic bundle of operator edits, so you can:
+
+stay parametric in-editor, and/or
+
+bake to blendshapes on export.
+
+{
+  "asset_id": "ExpressionPack_Face_v1",
+  "targets": ["OrganicModule_FaceBase_v1"],
+  "expressions": [
+    {
+      "id": "EXP_blink_L",
+      "driver": "S_blink_L",
+      "range": [0,1],
+      "ops": [
+        { "type": "CurveWarp", "target": "C_upper_lid_loop_FRONT_L", "mode": "close_to_lower", "amount": "S_blink_L", "preserve_canthus": true },
+        { "type": "VolumePreserve", "target_op": "OP2_EyelidThickness_L", "amount": 0.8 }
+      ]
+    },
+    {
+      "id": "EXP_smile",
+      "driver": "S_smile",
+      "range": [0,1],
+      "ops": [
+        { "type": "CurveWarp", "target": "C_outer_lip_loop_FRONT", "mode": "raise_corners", "amount": "S_smile" },
+        { "type": "FoldDeepen", "target": "C_nasolabial_fold_FRONT_L", "amount": "0.6*S_smile" }
+      ]
+    },
+    {
+      "id": "EXP_jaw_open",
+      "driver": "Jaw.open_deg",
+      "range_deg": [0,35],
+      "ops": [
+        { "type": "BoneDrivenWarp", "target": "OP5_LipProfiles", "mode": "separate_lips", "amount": "Jaw.open_deg/35" },
+        { "type": "Corrective", "id": "CORR_jaw_open", "amount": "Jaw.open_deg/35" }
+      ]
+    },
+    {
+      "id": "EXP_brow_raise_L",
+      "driver": "S_brow_raise_L",
+      "range": [0,1],
+      "ops": [
+        { "type": "CurveWarp", "target": "C_brow_arc_FRONT_L", "mode": "lift", "amount": "S_brow_raise_L" },
+        { "type": "CreaseCarveAdjust", "target_op": "OP7_Folds", "mode": "forehead_wrinkle_hint", "amount": "0.4*S_brow_raise_L" }
+      ]
+    }
+  ]
+}
+
+The non-negotiable implementation trick (keeps it sane)
+
+Store canonical curves in bone-local 3D; orthos are just editable projections. That makes “forever editable” real: proportions change, jaw rotates, head scales—your curve truth follows cleanly, and the mesh is always recompiled.
+
+If you want the next “proceed”: I’ll do Hand Module v1 (tendons + knuckles + nail beds) in the same curve/patch/operator form—because hands are where most systems collapse, and your compiler approach can actually win there.
+
+Sources
+proceed
+Thought for 1m 45s
+
+Good. The “perfect retopology on every new line” reduces to one compiler contract:
+
+Every new drawn curve is promoted to topology (a SharedBoundary)
+
+Patches are recompiled locally (split/merge patch graph)
+
+Quads are emitted from templates (annulus, ribbons, junctions)
+
+Every consumer samples boundaries from one shared sampler (no cracks, no drift)
+
+Your own notes already lock the two key invariants in place: SharedBoundary→Patch templates (annular + ribbons) and the PANP rule that prevents loop sliding forever. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+
+And ModelMaker already proves the “single authoritative sampler = no cracks” pattern at production-detail level. 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+Below is the exact topology engine, with the AnnularQuadPatch algorithm spelled out and the curve insertion → patch recompilation pipeline.
+
+A. Core objects
+1) SharedBoundary (topology, not mesh)
+
+A SharedBoundary is the canonical boundary curve used by multiple patches. For faces you already named examples like SharedBoundary_MouthOuter / SharedBoundary_MouthInner feeding AnnularQuadPatch. 
+
+orthobuilder
+
+PANP rule (non-negotiable): boundaries are stored as segments between named ports, with normalized s∈[0,1] per segment, and UV pins on ports. That’s your “compiler instead of clay” guarantee. 
+
+orthobuilder
+
+2) BoundarySampler meta-node (the no-crack guarantee)
+
+Exactly like CockpitEdgeSamplerNode, you create a BoundarySampler per SharedBoundary, and every patch that touches that boundary uses it—nobody “infers” the edge independently. 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+This is the generalized form of ModelMaker’s “No-Crack Guarantee” logic. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Concretely, your sampler stores:
+
+consistent arc-length resampling (M samples)
+
+u around loop, s station/segment info
+
+tangent + normal frame
+
+any precomputed offsets (rim/creases/etc.), exactly like the cockpit sampler can provide rim points for perfect joins. 
+
+MODELMAKER_MASTER_MONOLITH
+
+B. AnnularQuadPatch (exact quad emission)
+
+Your own definition is already crisp: u runs around the loop, v runs radially, and seam placement must be explicit (ports pin u). 
+
+orthobuilder
+
+Inputs
+
+outer : SharedBoundary (closed loop)
+
+inner : SharedBoundary (closed loop)
+
+M = number of quads around (u resolution)
+
+N = number of quads across (v resolution)
+
+seamPort (e.g. P_commissure_L) pinned to u=0 
+
+orthobuilder
+
+Step 1 — Build samplers (authoritative boundary frames)
+
+S_out = sample(outer, M, seamPort)
+
+S_in = sample(inner, M, seamPort)
+Both produce arrays frame[k] with:
+pos[k], tan[k], and a consistent “radial direction” you’ll compute.
+
+This mirrors the cockpit approach: one sampler, many dependents. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Step 2 — Define the parametric surface (patch truth)
+
+Baseline annulus surface:
+
+𝑃
+(
+𝑢
+,
+𝑣
+)
+=
+(
+1
+−
+𝑣
+)
+ 
+𝑂
+(
+𝑢
+)
++
+𝑣
+ 
+𝐼
+(
+𝑢
+)
+P(u,v)=(1−v)O(u)+vI(u)
+
+Where O(u) and I(u) are the sampled boundary curves (from the samplers).
+
+Optional bulge / thickness that still preserves exact boundaries:
+
+𝑃
+(
+𝑢
+,
+𝑣
+)
+←
+𝑃
+(
+𝑢
+,
+𝑣
+)
++
+𝑏
+(
+𝑣
+)
+ 
+𝐴
+(
+𝑢
+)
+ 
+𝑁
+(
+𝑢
+)
+P(u,v)←P(u,v)+b(v)A(u)N(u)
+
+b(v) is any function with b(0)=b(1)=0 (so boundaries remain exact)
+
+N(u) is the underform normal (e.g., SDF gradient) evaluated at the midline (O+I)/2
+
+A(u) can be driven by fields/ports (lip volume, eyelid thickness, etc.)
+
+Step 3 — Emit a structured quad grid (deterministic)
+
+Vertices:
+
+V[k][j] for k=0..M-1 and j=0..N
+
+u_k = k/M, v_j = j/N
+
+V[k][j] = P(u_k, v_j)
+
+Quads:
+
+for each k (wrapping to (k+1)%M) and each j=0..N-1:
+
+quad = (k,j) (k+1,j) (k+1,j+1) (k,j+1)
+
+Step 4 — Port → UV locking (stability forever)
+
+You already wrote the rule: ports get fixed u positions. That’s what keeps expression ops stable forever (no sliding). 
+
+orthobuilder
+
+
+Same principle applies to every annulus (knuckles, wrist rings, eye socket, etc.).
+
+C. “Draw a new line” → topological insertion (the compile pipeline)
+
+This is the part that makes the system feel alive: drawing is not decoration; it is graph surgery.
+
+C1) Draw in an ortho = create a canonical curve with a lift rule
+
+Your binding system explicitly separates spaces and says curves are authored in orthos but stored as a single canonical 3D curve, using lift rules like SurfaceProject / MultiViewFit / Hybrid. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+For “draw-on-surface while staying perfectly straight in the drawing plane”:
+
+The 2D stroke is exact (SVG Bézier)
+
+The 3D curve is defined as the intersection of the curtain with the surface via the curve’s lift rule (SurfaceProject / Hybrid), not by baking mesh points.
+
+C2) Promote to SharedBoundary immediately
+
+Once the curve exists in canonical 3D:
+
+assign ports (endpoints snap to existing ports or create new ports)
+
+enforce PANP segmentation
+
+create SharedBoundary_NewStroke
+
+This is the same “SharedBoundary-first” topology engine you described for mouth/eye. 
+
+orthobuilder
+
+C3) Patch graph recompilation (local, deterministic)
+
+For each patch Patch_i touched by the new boundary:
+
+Compute the curve in that patch’s UV domain
+
+you already require “patch-native stable (u,v) domains.” 
+
+orthobuilder
+
+so you invert P_i(u,v)=x to get (u,v) along the new curve (Newton solve in UV is fine because the truth is the patch surface, not triangles).
+
+Split the patch’s boundary network:
+
+Closed curve inside patch → produces an inner boundary (annulus case)
+
+Open curve from boundary to boundary → produces ribbon splits
+
+Re-emit only the affected templates (everything else stays unchanged)
+
+This is why your approach beats global remesh: edits trigger template recompiles, not topology drift.
+
+D. Template library you need (minimum set)
+
+You already have the two most powerful ones:
+
+AnnularQuadPatch(outer, inner) — rings / sockets / loop insertions 
+
+orthobuilder
+
+RibbonPatch(boundarySegment, targetCurve) — lids, folds, panel strips 
+
+orthobuilder
+
+Add these next (small but unlock everything):
+3) JunctionPatch(N-way) — where multiple ribbons meet (finger webs, mouth corner area)
+4) CapPatch(loop) — closes a loop cleanly (fingertip, eyelid canthus cap)
+5) BridgePatch(loopA, loopB) — controlled loft between two loops (tendons, knuckle bulges)
+
+And every template consumes SharedBoundarySamplers exactly like cockpit wall/rim/floor all consume the same sampler frames. 
+
+MODELMAKER_MASTER_MONOLITH
+
+E. Minimal “proof it works” milestone (sphere, no noise)
+
+Do this exactly as Grok suggested:
+
+Start with a 6-patch sphere (cube-sphere) so you’re already aligned with the 6-ortho worldview.
+
+Draw a closed curve in one ortho.
+
+Lift/project to surface → SharedBoundary_NewLoop
+
+Insert as topology → compile annular bands (or split patches into rings)
+
+Draw a second loop → you should get another perfectly aligned ring with zero drift because ports + u-pins + shared sampler are doing their job. 
+
+orthobuilder
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+If you want the next proceed, I’ll write the exact RibbonPatch + JunctionPatch emission rules (including port conventions for hands: knuckle rings, finger webs, wrist loop) so “draw crease → perfect quad flow” becomes universal, not just lips/eyes.
+
+Sources
+proceed
+Thought for 1m 6s
+
+Alright. Here’s the deterministic “draw line → perfect topology” compiler loop, tightened into something you can actually implement.
+
+1) The invariant: one authoritative boundary object (no cracks, no drift)
+
+Your orthobuilder already states the rule: every SharedBoundary must be port-parametrized (PANP) so loops can’t slide, flip, or re-index when you edit or animate. Ports pin u positions; interior samples are monotonic between pinned ports. 
+
+orthobuilder
+
+ModelMaker’s monolith has the exact same contract in another domain: one sampler produces the seam, and every subsystem (hole, wall, rim) must use it or cracks become possible. 
+
+MODELMAKER_MASTER_MONOLITH
+
+So the “perfect retopo” engine is simply applying that seam-sampler contract to topology:
+
+SharedBoundary = your seam sampler
+
+All patch emitters must sample only from SharedBoundary
+
+No node is allowed to “infer” edges independently (same as cockpit) 
+
+MODELMAKER_MASTER_MONOLITH
+
+That’s why new lines can be topological insertions, not post-remesh hacks.
+
+2) What you store for a new drawn line (no discretized curve truth)
+
+When the user draws a curve in an ortho, you keep it as an exact 2D parametric curve (SVG/Bezier). Then you “lift” it into 3D as a curtain (extrusion along view normal). The “fit to surface” curve is the exact intersection:
+
+surface: d_model(P)=0 (implicit field truth)
+
+curtain: h_curtain(P)=0 (distance-to-curtain or analytic constraint)
+
+So the inserted boundary is:
+
+SharedBoundary_new = { g(u,v)=0 + ports + parameterization }
+where g is either h_curtain(P(u,v)) in a patch domain, or a world-space implicit pair {d_model=0, h_curtain=0} if not yet bound to a patch.
+
+This matches the orthobuilder intent: topology is driven by SharedBoundary + patch templates (not mesh edits). 
+
+orthobuilder
+
+3) Patch-template retopo: the two load-bearing emitters
+A) AnnularQuadPatch (closed curve insertion → perfect quad rings)
+
+Orthobuilder literally calls this out as the mouth topology engine:
+
+SharedBoundary_MouthOuter + SharedBoundary_MouthInner → AnnularQuadPatch 
+
+orthobuilder
+
+seam must be explicit, and ports lock u (corner/upper_mid/etc.) 
+
+orthobuilder
+
+This is your general “closed curve inserted into a surface” primitive:
+
+Outer boundary = “existing boundary” (or region boundary)
+
+Inner boundary = “new curve”
+
+Emit a regular (u,v) grid:
+
+u wraps around loop
+
+v runs radially between boundaries 
+
+orthobuilder
+
+B) RibbonPatch (open curve insertion → perfect strips, splits, lids, creases)
+
+Orthobuilder gives the eye recipe:
+
+one SharedBoundary_LidMargin compiled from segments 
+
+orthobuilder
+
+two RibbonPatches (upper & lower) targeting crease or orbital band 
+
+orthobuilder
+
+seam convention fixed (inner canthus u=0) 
+
+orthobuilder
+
+That “ribbon” emitter is exactly what you want for:
+
+panel lines, sharp creases, eyelid folds, clothing seams, muscle separations
+…and it becomes the default topology insertion when a curve is open or connects two boundary points.
+
+4) The topological insertion rules (this is the “no remesh” guarantee)
+
+When a new curve arrives, you do graph surgery, not meshing:
+
+Case 1 — Closed curve fully inside a patch
+
+Result: patch becomes an annulus (or patch + annulus), emitted by AnnularQuadPatch.
+
+Case 2 — Open curve with endpoints on a boundary (or snapped to ports)
+
+Result: patch is split into two patches along that boundary; the split seam becomes a SharedBoundary; each side emits clean quads, and the split edge is identical on both sides (same sampler).
+
+Case 3 — Curve crosses other inserted curves
+
+Result: you introduce a Junction patch type (think: “Y” or “X” intersection template) rather than allowing T-junctions silently.
+
+The important part: in every case, the new line is immediately promoted to SharedBoundary, and all downstream geometry is emitted from that object—exactly the cockpit “no-crack” contract, but generalized. 
+
+MODELMAKER_MASTER_MONOLITH
+
+5) How you keep it fast while staying “compiler-pure”
+
+You can reuse the ModelMaker “sampler node” pattern:
+
+build a boundary sampler once per rebuild (or per dirty region)
+
+simplest approach: rebuild full sampler each time because it’s cheap up to a fixed M 
+
+MODELMAKER_MASTER_MONOLITH
+
+everyone consumes the same sampled frames (positions + tangents + normals + u) 
+
+MODELMAKER_MASTER_MONOLITH
+
+So your SharedBoundary runtime looks like:
+
+M samples (arc-length or port-aware)
+
+frames: u, position, tangent, normal, curvature…
+
+optional kRangeForDirtyU for partial updates (monolith already does this idea for s bands) 
+
+MODELMAKER_MASTER_MONOLITH
+
+This gives you interactive redraw without sacrificing determinism: the truth is still {equations + ports}, the sampler is just the cached view.
+
+6) Minimal milestone that proves the whole system
+
+This is the cleanest “proof-of-perfection” sequence (and it matches the direction in your notes):
+
+Start with sphere (analytic surface).
+
+Draw a closed curve in one ortho → compile SharedBoundary via curtain ∩ sphere.
+
+Promote to inner boundary → emit AnnularQuadPatch quad rings. 
+
+orthobuilder
+
+Draw a second closed curve → insert another annulus.
+
+Verify invariants:
+
+seam stays locked at the same port (u=0 convention) 
+
+orthobuilder
+
+rings never “slide” because PANP pins u at ports 
+
+orthobuilder
+
+no cracks (both sides sample the same boundary object, like cockpit) 
+
+MODELMAKER_MASTER_MONOLITH
+
+Once this works, “perfect retopo on every new line” is no longer a promise—it’s an invariant.
+
+If you say proceed again, I’ll write the exact emitter specs (inputs/outputs + rules) for:
+
+AnnularQuadPatch.emit() (port-locked u mapping, seam rules, radial frame)
+
+RibbonPatch.emit() (target curves, thickness/extent conventions)
+
+PatchSplit surgery (how you decide which patch owns a new boundary, and how you prevent illegal T-junctions)
+
+Sources
+proceed
+Thought for 1m 12s
+
+Proceed. Here’s the exact “draw a line → it becomes topology → perfect quads immediately” subsystem, in the same compiler spirit as your notes.
+
+1) The invariants that make “perfect retopo” possible
+Invariant A — Boundaries are first-class objects
+
+A drawn curve isn’t decoration. It becomes a SharedBoundary that multiple patches reference, so it can’t “almost match” — it is the same entity everywhere. 
+
+orthobuilder
+
+Invariant B — PANP prevents loop sliding forever
+
+Every SharedBoundary is port-parametrized (PANP): segments stored between named ports; parameter is normalized within each segment; UV/u positions pinned at ports; interior is monotonic between pins. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Invariant C — One sampler owns the seam
+
+No node is allowed to infer the boundary independently. You build a single BoundarySampler once, and everything downstream uses it — that’s your “no-crack guarantee” pattern from ModelMaker. 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+2) The core object: SharedBoundary + BoundarySampler (generalizing CockpitEdgeSampler)
+
+ModelMaker already proves the pattern: a sampler provides consistent perimeter sampling + u around loop, and every subsystem consumes those frames. 
+
+MODELMAKER_MASTER_MONOLITH
+
+So for any inserted curve:
+
+SharedBoundary (truth)
+
+curve_ref: “equation”, not stored points (2D SVG + lift_rule + underform/surface id)
+
+ports: named anchors (commissure_L, etc.)
+
+u_convention: seam placement is explicit and stable (u=0 at a named port)
+
+Your mouth annulus spec already nails the rule: seam at P_commissure_L, optional secondary seam at P_commissure_R, and port→u locks for operator stability. 
+
+orthobuilder
+
+BoundarySampler (derived view of truth)
+
+A tiny meta-node like CockpitEdgeSamplerNode: build once per rebuild pass; output frames[k] with:
+
+u = k/M
+
+position P(u) (evaluated from the boundary equation)
+
+tangent/normal (from boundary derivative + surface gradient)
+
+helper mappings for dirty ranges (optional, same pattern as monolith) 
+
+MODELMAKER_MASTER_MONOLITH
+
+3) The compiler pass: Curve insertion → patch graph update → quad emission
+
+This is the “Illustrator-fast but 3D-correct” pipeline you wrote: update 2D, lift to 3D, rebuild only dependent boundaries, re-solve interiors lightly, regenerate derived guides/diagnostics. 
+
+orthobuilder
+
+Step 0 — Classify the new curve
+
+Closed loop → will create an annulus or a region split.
+
+Open curve → will create a ribbon split (new edge flow) or a controlled cut.
+
+Step 1 — Promote to topology (no drift)
+
+Promote the curve to a SharedBoundary immediately (truth_mode AUTHORITATIVE or HYBRID). Your system already supports truth modes + patch→curve derived guides so projections never drift. 
+
+orthobuilder
+
+Step 2 — Build the BoundarySampler (single source of truth)
+
+Exactly like “CockpitEdgeSamplerNode”: downstream nodes depend on it, not on their own resampling. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Step 3 — Patch graph surgery (local, deterministic)
+
+Find which patch(es) the new SharedBoundary intersects in UV/topology space, then do topological surgery:
+
+“Insert inner boundary” (closed loop inside an existing patch region)
+
+“Split patch by cut” (open curve from boundary to boundary, or boundary to itself)
+
+Only affected patches are rebuilt (local recompilation), not the whole model. 
+
+orthobuilder
+
+Step 4 — Emit quads by templates (not remeshing)
+
+This is the key: retopology = re-emitting structured quads from a template, not running a global optimizer on triangles.
+
+Your face topology engine is literally this:
+
+Mouth: SharedBoundary_MouthOuter + SharedBoundary_MouthInner → AnnularQuadPatch 
+
+orthobuilder
+
+Eye: lid margin becomes ribbon patches + optional orbital annulus 
+
+orthobuilder
+
+4) The templates that guarantee “perfect retopo”
+A) AnnularQuadPatch(outer, inner)
+
+Your spec is already the canonical contract:
+
+u runs around the loop
+
+v runs radially (0 outer → 1 inner)
+
+seam placement explicit
+
+ports pinned to fixed u values 
+
+orthobuilder
+
+Emission rule (deterministic):
+
+Build outerSampler(M) and innerSampler(M) with the same u grid (port-locked).
+
+Choose radial resolution R from density field / feature band.
+
+For each ring r=0..R and each sample k=0..M-1:
+
+u = k/M, v = r/R
+
+Create vertex via template map, not guesswork:
+
+baseline: blend positions P = lerp(outer.P(u), inner.P(u), v)
+
+then conform to the surface truth (if the patch sits on an implicit surface): solve d(P)=0 along the local normal / gradient direction to machine tolerance.
+
+Quads connect (r,k) to (r+1,k) and (r,k+1).
+
+The important thing: the topology is fixed by (M,R, seam, port locks). Adding a new loop just inserts new rings; nothing slides.
+
+B) RibbonPatch(boundarySegment, targetBandOrCurve)
+
+You already define it for eyelids:
+
+u along the margin segment
+
+v across thickness/extent 
+
+orthobuilder
+
+Use it for open curve insertions too:
+
+New curve becomes a boundary segment (with ports at endpoints)
+
+“Target” is either:
+
+another boundary
+
+a parallel offset band
+
+a crease curve
+
+Emission is identical: u-grid pinned by ports; v-grid across; conform to surface.
+
+5) Why this is “perfect retopo” when you draw new lines
+
+Because every new curve becomes a SharedBoundary and triggers patch recompilation, the mesh is never “retopologized” as an afterthought — it’s recompiled from the patch skeleton.
+
+And because you enforce one sampler per boundary, every adjacent system references the identical frames, so seams cannot crack (same as the cockpit contract). 
+
+MODELMAKER_MASTER_MONOLITH
+
+6) Minimal milestone that proves the whole loop (sphere)
+
+Do exactly what Grok outlined, but in your patch language:
+
+Base surface: analytic sphere (or any primitive underform).
+
+Draw two closed loops in one ortho (easiest to demonstrate an annulus).
+
+Each loop is promoted to SharedBoundary with seam pinned (u=0 at a named port).
+
+Compile AnnularQuadPatch(loopA, loopB) and emit quad rings instantly.
+
+Draw a third loop: it inserts another annulus/ring band locally — existing rings don’t drift.
+
+Once that works, you have the general mechanism: draw → topology insertion → deterministic quads.
+
+If you want the next “build-critical piece” immediately: I can write the exact TypeScript interfaces + node graph for SharedBoundaryNode, BoundarySamplerNode, AnnularQuadPatchNode, and the local patch-surgery algorithm (closed-loop insert + open-cut split) so you can drop it straight into your ModelMaker-style pipeline.
+
+Sources
+proceed
+Thought for 1m 28s
+
+Here’s the next build-critical piece: turn “draw a new line” into deterministic topology insertion (not remeshing), using exactly what’s in orthobuilder + the ModelMaker “no-crack guarantee” pattern.
+
+1) Two invariants that make this “perfect”
+
+Invariant A — No drift (semantic stability): every boundary is port-parametrized (PANP): curve segments stored between named ports; parameters normalize per-segment; UV pins at ports; samples are monotonic between pinned ports. That’s the whole “loop sliding never happens” rule. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Invariant B — No cracks (geometric stitching): every patch that touches a boundary must read its boundary samples from a single sampler output, never “recompute its own version.” This is exactly the CockpitEdgeSamplerNode contract: wall/rim/hole all consume the same sampled frames → cracks become impossible. 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+So: SharedBoundarySamplerNode is your CockpitEdgeSamplerNode, generalized.
+
+2) Exact “draw on surface” without approximations in the model truth
+
+When the user draws a 2D curve in an ortho view, it stays exactly that in that view. You lift it using a LiftRule (SurfaceProject / MultiViewFit / Hybrid). SurfaceProject is explicitly “ray bundle from view plane ∩ underform” (your exact curtain∩surface idea). 
+
+orthobuilder
+
+Then your update pipeline is already written:
+
+update the 2D curve
+
+lift → update canonical C3D control points (with port locks)
+
+rebuild only dependent patch boundaries
+
+re-solve patch interior lightly
+
+regenerate derived guides/diagnostics 
+
+orthobuilder
+
+That’s the “Illustrator-fast but 3D-correct” loop. 
+
+orthobuilder
+
+3) Promote the drawn curve to topology (SharedBoundary)
+
+A SharedBoundary is a first-class entity, owned once and referenced by multiple patches, so an eyelid ring / mouth ring isn’t “two edges that hopefully match” — it’s literally the same boundary object. 
+
+orthobuilder
+
+Minimal structure (what you actually store)
+
+Canonical 3D curve C3D(t) in bind space (bone-local) 
+
+orthobuilder
+
+Ports + locks (named invariants) 
+
+orthobuilder
+
+A C→UV map when the boundary binds to a patch boundary/trim curve: Φ_{C→UV}: s↦(u(s),v(s)), with UV pinned at ports, monotone between ports 
+
+orthobuilder
+
+Truth mode (AUTHORITATIVE / DERIVED / HYBRID) so guides never fight truth 
+
+orthobuilder
+
+4) “Perfect retopology” = patch-graph surgery + template emission
+
+When a new curve is inserted, you do local topology surgery:
+
+Case A — Closed loop insertion → AnnularQuadPatch
+
+This is explicitly your mouth engine:
+SharedBoundary_MouthOuter + SharedBoundary_MouthInner → AnnularQuadPatch, with u around the loop, v radial, and seam placement explicit for operator stability. 
+
+orthobuilder
+
+Port→u locking is the key:
+
+commissure_L u=0
+
+upper_mid u=0.25
+
+commissure_R u=0.5
+
+lower_mid u=0.75 
+
+orthobuilder
+
+Case B — Open curve insertion → RibbonPatch
+
+Your eyelid design is the canonical pattern:
+
+one SharedBoundary_LidMargin loop
+
+upper ribbon patch and lower ribbon patch, u along the margin, v across thickness/extent 
+
+orthobuilder
+
+
+Seam convention (u=0 at inner canthus, consistent across characters) is what makes downstream operators trivial. 
+
+orthobuilder
+
+5) The missing “compiler primitive”: SharedBoundarySamplerNode
+
+This is the direct generalization of ModelMaker’s sampler contract.
+
+Output: frames[k] at sample index k, where each frame is the canonical evaluated boundary point (and optional tangents/normals/aux rings).
+
+Every consumer (AnnularQuadPatch, RibbonPatch, seam preview, UV guides) must read from this sampler, just like cockpit wall/rim/hole do. 
+
+MODELMAKER_MASTER_MONOLITH
+
+You can even keep the same FAST/FINAL philosophy: rebuild full sampler in FAST (cheap), optional dirty-band rebuild later (the monolith includes a simple “dirty k-range” pattern). 
+
+MODELMAKER_MASTER_MONOLITH
+
+6) AnnularQuadPatch emission algorithm (deterministic, quad-perfect)
+
+Inputs
+
+outer: SharedBoundary
+
+inner: SharedBoundary
+
+Mu (samples around loop), Mv (radial segments)
+
+Step 1 — Build u-grid with seam + port pins
+
+Choose seam port (e.g., commissure_L for mouth, inner canthus for eye). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Construct a piecewise-monotone u(s) over segments between pinned ports (PANP). 
+
+orthobuilder
+
+Sample uᵢ = i/Mu, but ensure exact hits at pinned port u values.
+
+Step 2 — Sample both boundaries at identical uᵢ
+Because u is semantic (port-anchored), outer and inner can have different arc lengths yet still match perfectly in u.
+
+Step 3 — Emit quads as a structured grid
+For each uᵢ:
+
+Po = outer.eval(uᵢ)
+
+Pi = inner.eval(uᵢ)
+Then for vⱼ=j/Mv:
+
+P(uᵢ,vⱼ) = blend(Po, Pi, vⱼ)
+Optionally: run a light “fairing” that preserves boundary locks (your pipeline already expects light relaxation only on interiors). 
+
+orthobuilder
+
+Step 4 — Indices
+Structured quads (converted to two tris if needed) in (u,v) grid order; seam duplicates are handled explicitly at u=0/1.
+
+That’s it. No global optimization. No topology drift. Adding another loop just inserts another annulus and only dirties adjacent patches.
+
+7) Minimal proof milestone (the one that demonstrates the whole thesis)
+
+Do exactly what Grok summarized, but wire it into these invariants:
+
+Base field: sphere analytic SDF
+
+Draw closed curve in one ortho
+
+Lift (curtain∩surface) → new SharedBoundary (ports auto-created if none)
+
+Promote to SharedBoundary → AnnularQuadPatch emits perfect rings (u seam pinned) 
+
+orthobuilder
+
+Add second curve → insert second annulus; only local rebuilds trigger (sampler + adjacent patches)
+
+If step (4) feels instant and the ring topology never shifts under edits, you’ve proven the “compiler retopo” core.
+
+Code skeleton (core objects only)
+type Port = { name: string; uLocked?: number; lock: number }; // lock∈[0,1]
+type PANPSegment = { from: string; to: string; /* implicit: s∈[0,1] */ };
+
+type SharedBoundary = {
+  id: string;
+  ports: Port[];
+  segments: PANPSegment[];     // ordered cyclic (closed) or linear (open)
+  eval3D: (u: number) => [number, number, number]; // canonical bind-space eval
+};
+
+type BoundaryFrame = {
+  u: number;
+  p: [number, number, number];
+  t?: [number, number, number]; // tangent (optional)
+  n?: [number, number, number]; // normal (optional)
+};
+
+type SharedBoundarySampler = {
+  M: number;
+  frames: BoundaryFrame[]; // ordered, seam-explicit
+};
+
+function buildSharedBoundarySampler(b: SharedBoundary, M: number): SharedBoundarySampler {
+  // 1) construct u-grid with exact hits at locked ports (piecewise monotone)
+  // 2) frames[k].p = b.eval3D(u_k)
+  return { M, frames: [] };
+}
+
+function emitAnnularQuadPatch(
+  outerS: SharedBoundarySampler,
+  innerS: SharedBoundarySampler,
+  radialSegs: number
+) {
+  // assume same M + aligned u-grid (by port-u locking)
+  // vertices: (radialSegs+1) * M
+  // v=0 uses outerS.frames[k].p, v=1 uses innerS.frames[k].p
+}
+
+
+If you say proceed again, the next piece I’ll lay down is the actual patch-graph surgery API (closed loop split, open cut split, boundary ownership, dependency dirtiness) so you can implement: “insert curve → recompile only affected patches” as a concrete, testable subsystem.
+
+Sources
+proceed
+Thought for 2m 15s
+
+Alright — now we “lock in” the compiler contract for perfect retopology when a new line is drawn: the line becomes topology, not decoration, and the mesh is just an emitted view.
+
+1) The invariants that make “perfect retopo” possible
+A. SharedBoundary is the only truth for loops
+
+Your own notes already state the core: SharedBoundary patch templates guarantee clean quad rings, e.g. mouth outer+inner → AnnularQuadPatch, with explicit seam placement and port→UV locking. 
+
+orthobuilder
+
+B. PANP prevents “loop sliding” forever
+
+“Every SharedBoundary must be port-parametrized (PANP)” — curves stored between named ports, normalized s, and UV pins port u positions so topology/rig operators stay stable. 
+
+orthobuilder
+
+C. One boundary sampler contract (no cracks, ever)
+
+ModelMaker’s cockpit seam solution is the same principle in different clothing: every subsystem derives boundary points from the same sampler; no node infers it independently, which yields the “No-Crack Guarantee.” 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+That is exactly what SharedBoundary is for faces/patches: one authoritative boundary object feeding every dependent patch/emitter/deformer.
+
+D. Deterministic IDs
+
+You already call out the rule: operators must emit deterministic IDs or selection/history/edits break. 
+
+MODELMAKER_MASTER_MONOLITH
+
+
+So: every emitted vertex/edge/quad is addressable by (patchId, uIndex, vIndex) (and ports anchor where u=0 lives).
+
+2) The core compiler objects
+SharedBoundary (topology primitive)
+
+A SharedBoundary is not “a polyline.” It’s a constraint object with stable parameterization.
+
+Minimum payload:
+
+ports: {portId -> uLock} (hard pins) 
+
+orthobuilder
+
+segments: [{portA, portB, curve2D, liftRule}] (PANP segments) 
+
+orthobuilder
+
+eval(u) -> P3D (exact evaluation via the lift rule + constraint solve)
+
+reproject(view) -> curve2D(view) (exact linear ortho projection)
+
+Patch templates (topology emitters)
+
+You already named the two load-bearing ones:
+
+AnnularQuadPatch(outerBoundary, innerBoundary) with u around loop and v radial. 
+
+orthobuilder
+
+RibbonPatch(boundarySegment, targetCurve/band) for eyelids/creases. 
+
+orthobuilder
+
+A template is not a remesher. It is a deterministic quad emitter with constraints.
+
+3) “Draw line → perfect retopo” as a topological insertion
+
+When the user draws a curve in any ortho:
+
+Step 0 — compile curve into a SharedBoundaryCandidate
+
+The curve is stored as exact SVG param (Bezier, line, arc) in the drawing plane.
+
+Its “curtain” is implicit: all 3D points whose ortho projection lies on that curve.
+
+Intersect curtain with the model surface to define the 3D locus (by constraint solve).
+
+Produce ports (auto-snap endpoints or auto-create new ports).
+
+Step 1 — promote to SharedBoundary (PANP + seam)
+
+Choose canonical seam port (e.g., commissure_L or inner canthus) and lock u=0 there. 
+
+orthobuilder
+
+Generate additional port locks (upper_mid, etc.) so the “meaning” of u never drifts. 
+
+orthobuilder
+
+Step 2 — patch-graph surgery (local, deterministic)
+
+Locate which patch region the new boundary lies in (via reproject-to-UV on the owning patch chart), then:
+
+Case A: Closed loop inside a patch region
+
+If region is a disk-like patch: DiskPatch(outer) becomes AnnularQuadPatch(outer, newInner) + optionally a new inner cap (if you want a hole you keep open vs filled).
+
+If region is already an annulus: split it into two annuli:
+
+Annular(outer, inner) + new loop mid → Annular(outer, mid) and Annular(mid, inner)
+
+Only the affected patch(es) rebuild. Everything else stays byte-identical.
+
+Case B: Open curve across a patch region
+
+Promote it as a SharedBoundarySegment with ports at both ends.
+
+Split the patch into two patches along that segment (no T-junctions unless explicitly allowed).
+
+Emit via RibbonPatch or “SplitQuadPatch” template depending on whether it’s a cut or a deformation rail.
+
+Step 3 — re-emit quads by template (not remesh)
+
+This is where “perfect retopo” happens: emission is driven by ports + template rules, not by global optimization.
+
+4) AnnularQuadPatch: the exact emitter
+
+You already defined the critical parts: u wraps, v is radial, seam is explicit, and ports lock u. 
+
+orthobuilder
+
+Here’s the emitter spec (deterministic, compiler-style):
+
+type Vec3 = {x:number,y:number,z:number};
+
+type Port = { id: string; uLock: number }; // e.g. commissure_L = 0.0
+type SharedBoundary = {
+  id: string;
+  ports: Port[];                          // hard u locks
+  eval(u: number): Vec3;                  // exact on-surface point
+  // optional: tangent(u), normal(u), etc.
+};
+
+type AnnularQuadPatch = {
+  id: string;
+  outer: SharedBoundary;
+  inner: SharedBoundary;
+  M: number; // columns around (u samples)
+  N: number; // radial rows (v samples)
+  // eval(u,v) may be direct (analytic) or solved via constraint lift
+  eval(u: number, v: number): Vec3;
+};
+
+function emitAnnularQuads(p: AnnularQuadPatch) {
+  const { M, N } = p;
+  const verts: Vec3[] = [];
+  const idx = (r:number,k:number) => r*M + ((k%M)+M)%M;
+
+  for (let r=0; r<=N; r++) {
+    const v = r / N;
+    for (let k=0; k<M; k++) {
+      const u = k / M;         // u=0 is seam by construction (port-locked)
+      verts.push(p.eval(u, v));
+    }
+  }
+
+  const quads: [number,number,number,number][] = [];
+  for (let r=0; r<N; r++) {
+    for (let k=0; k<M; k++) {
+      const a = idx(r,   k);
+      const b = idx(r,   k+1);
+      const c = idx(r+1, k+1);
+      const d = idx(r+1, k);
+      quads.push([a,b,c,d]);   // deterministic quad grid
+    }
+  }
+
+  return { verts, quads };
+}
+
+
+Why this stays perfect across edits:
+Because u is meaningful (port-locked) and the emitter is purely indexed — nothing can “slide.” 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+5) Minimal “sphere proof” milestone (zero hand-waving)
+
+Grok’s milestone is exactly right: start with an analytic sphere so the only complexity is topology.
+
+Setup
+
+Base surface: SphereSDF.
+
+Provide a default outer SharedBoundary (equator loop) with a seam port at a named landmark.
+
+User draws a closed curve in TOP view.
+
+Compile
+4. The drawn curve becomes a curtain constraint; intersect with the sphere → produce SharedBoundary_1.
+5. Promote it: assign seam port, lock u ports.
+
+Insert
+6. Build AnnularQuadPatch(outer = EquatorLoop, inner = SharedBoundary_1) and emit quads.
+
+Prove insertion
+7. Draw a second closed curve between them → split annulus into two annuli (local rebuild only).
+
+Success criteria
+
+The quad grid stays identical outside the affected annulus.
+
+Port-anchored points remain at the same (uLock, vIndex) indices forever.
+
+No cracks because everything references the same boundary object (SharedBoundary = your face equivalent of CockpitEdgeSampler). 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+If you say proceed again, I’ll do the next layer: open-curve insertion (patch splitting without T-junctions), plus the “boundary ownership + dirty-band rebuild” rules (the exact analog of the sampler’s kRangeForDirtyS optimization) so edits rebuild only the minimal topological neighborhood. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Sources
+proceed
+Thought for 1m 35s
+
+Here’s the “compiler-grade” version of what you build next: topological insertion operators + template quad emitters that rebuild only the touched region, while all seams stay locked because they’re literally the same boundary object, not “two edges that hope to match.” 
+
+orthobuilder
+
+1) Invariants (non-negotiable)
+
+These are the rules that make “perfect on every new line” actually true in practice:
+
+Every curve declares truth_mode: AUTHORITATIVE vs DERIVED vs HYBRID. 
+
+orthobuilder
+
+SharedBoundary is first-class (owned once, referenced by multiple patches): the eyelid/mouth ring stays perfect because it’s one entity. 
+
+orthobuilder
+
+PANP bindings: everything is expressed as normalized parameter s ∈ [0,1] between named ports, with UV pinned at ports and monotonic between them. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Guides are derived from patch evaluation (never stored as sampled polylines), so they never drift. 
+
+orthobuilder
+
+Edit pipeline is local: update 2D curve → lift to 3D (lift_rule) → update canonical control points with port locks → rebuild only dependent patch boundaries → light interior solve → regenerate derived guides/masks/diagnostics. 
+
+orthobuilder
+
+2) The two insertion operators you need
+
+Everything reduces to these:
+
+A) InsertClosedBoundary (→ AnnularQuadPatch)
+
+Use when user draws a closed curve on a surface (mouth loop, eye loop, a “latitude ring” on the sphere milestone).
+
+Graph surgery
+
+Lift the 2D curve into canonical C3D using Hybrid lift_rule (SurfaceProject + MultiViewFit). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Create SharedBoundary SB_new (ports + canonical winding).
+
+Identify the host patch whose interior contains the loop.
+
+Split host patch into:
+
+an inner patch (inside loop)
+
+an annular patch (between loop and previous boundary or another loop)
+
+Rebind boundaries using PANP maps (pin UV at ports). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+Emitter
+
+For the annular region: AnnularQuadPatch emits structured quad rings.
+
+B) InsertOpenBoundary (→ RibbonSplitPatch)
+
+Use when user draws an open curve (crease, cutline, eyelid fold segment, etc.).
+
+Graph surgery
+
+Lift to C3D via lift_rule (often Hybrid). 
+
+orthobuilder
+
+Endpoints must land on ports:
+
+snap to existing ports, or
+
+create new ports where the curve hits a boundary.
+
+Create SharedBoundary segment SB_new (open; endpoints are ports).
+
+Split host patch into two patches whose boundary cycles include SB_new.
+
+Emit quads in each new patch with RibbonSplitPatch (or two Coons/Gordon patches).
+
+This “no T-junction unless you asked for it” behavior comes for free if you enforce: open insertions must terminate at ports on an existing boundary cycle.
+
+3) AnnularQuadPatch: exact, deterministic quad rings
+
+This is the minimal algorithm that proves the whole paradigm (sphere first).
+
+Inputs
+
+Outer boundary: B0(u) (SharedBoundary, closed)
+
+Inner boundary: B1(u) (SharedBoundary, closed)
+
+Both share the same canonical u via ports + PANP mapping. 
+
+orthobuilder
+
+Steps
+
+Choose seam: u=0 at a designated port (e.g., left commissure / a “north reference” port).
+
+Pick resolution: Nu around, Nv radially.
+
+Sample:
+
+p0 = B0(u_i)
+
+p1 = B1(u_i)
+
+For each radial layer v_j ∈ [0,1], create initial point:
+
+q = lerp(p0, p1, v_j)
+
+Project to surface truth (for sphere analytic; for general implicit field use Newton projection to satisfy d(q)=0 to tolerance).
+
+Stitch quads in the (u,v) grid with consistent winding.
+
+Why this stays “perfect” under edits
+
+The boundary is one SharedBoundary object referenced by both sides. 
+
+orthobuilder
+
+Parameterization is locked at ports (no sliding), monotonic between. 
+
+orthobuilder
+
+When you edit the curve, only affected patches rebuild (local compile), and derived guides re-evaluate from the patch (no drift). 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+4) Multi-view consistency at insertion time
+
+Your own fitting philosophy already encodes the key idea: orthos are ground truth, but with a trust hierarchy to prevent drift/fighting. 
+
+MODELMAKER_MASTER_MONOLITH
+
+So do the same for curve insertion:
+
+Primary lift: SurfaceProject from the active view gives depth. 
+
+orthobuilder
+
+Refine: MultiViewFit minimizes reprojection error in supporting views. 
+
+orthobuilder
+
+If orthos disagree locally, don’t average blindly — apply dominance/weights (your soft-intersection idea). 
+
+orthobuilder
+
+That’s exactly how you keep “draw in one view → instantly coherent across the others” without the system becoming mush.
+
+5) Automatic density refinement near the new curve
+
+You already have the right primitive: build a feature mask from distance-to-feature fields and use it to modulate softness / refinement. 
+
+orthobuilder
+
+ 
+
+orthobuilder
+
+So on insertion:
+
+Add SB_new to the feature set F_j
+
+Update m(p) from dist(p, SB_new) (same machinery) 
+
+orthobuilder
+
+Use that to drive local h(p) / k(p) so only a band around the new curve refines. 
+
+orthobuilder
+
+6) The proof milestone (do exactly this)
+
+This is the “draw → perfect rings” demo that proves the whole architecture:
+
+Sphere analytic SDF as base field.
+
+Draw a closed curve in one ortho (latitude).
+
+Lift to C3D (Hybrid lift_rule). 
+
+orthobuilder
+
+Promote to SharedBoundary. 
+
+orthobuilder
+
+InsertClosedBoundary → AnnularQuadPatch emits quad rings.
+
+Draw a second closed curve → insert again → only local rebuild occurs. 
+
+orthobuilder
+
+If you want the next “proceed”: I’ll write the concrete data structures (PatchGraph / SharedBoundary / Port / Binding maps) and the exact split logic for InsertOpenBoundary so it can’t ever generate illegal boundary cycles.
+
+Sources
+proceed
+Thought for 2m 1s
+
+Alright — we’ll execute Step 1: ReferencePack (Ortho image calibration + overlay) as the hard foundation for everything that follows (curve extraction, fitting loop, feature nodes, etc.). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Step 1 invariants (non-negotiable)
+
+World units are meters: 1 unit = 1 meter (so downstream geometry never fights unit conversions). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Orthographic cameras (no perspective distortion). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Deterministic + saved: calibration is stored as JSON so reopening reproduces identical alignment. 
+
+MODELMAKER_MASTER_MONOLITH
+
+What we’re building
+
+A universal “CAD underlay” system: load top/side/front/rear images, calibrate pixel→meter from a 1m bar, align by centerline + anchors, then render each view as a correctly sized plane in world space. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Data model (exact schema you should implement)
+
+Use the pack structure (per-view pxPerMeter, originPx, centerlinePx, anchorA_Px, anchorB_Px, opacity). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Key rule: never trust printed dimensions in the image — only pxPerMeter measured from the scale bar + your anchors. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Geometry + mapping math (the backbone)
+Pixel → meters (in plane-local coordinates)
+metersPerPx = 1 / pxPerMeter
+u = (px.x - originPx.x) * metersPerPx
+v = (px.y - originPx.y) * metersPerPx
+
+
+MODELMAKER_MASTER_MONOLITH
+
+Local plane (u,v) → world (X,Y,Z) by view axis
+
+You must standardize these mappings so the same schema works for boats/cars/buildings. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Canonical asset frame: X forward, Y up, Z right. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Practical mapping functions (matches the monolith):
+
+type ViewAxis = "TOP" | "SIDE" | "FRONT" | "REAR";
+
+export function localToWorld(axis: ViewAxis, u: number, v: number, c: number): [number, number, number] {
+  switch (axis) {
+    case "TOP":   return [u, c, -v];
+    case "SIDE":  return [u, -v, c];
+    case "FRONT": return [c, -v, u];
+    case "REAR":  return [c, -v, -u];
+  }
+}
+
+
+(These are directly aligned with the described mappings.) 
+
+MODELMAKER_MASTER_MONOLITH
+
+Centerline rotation
+
+Compute the centerline angle in image space, rotate by -θ to make it horizontal (for TOP/SIDE). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Build structure (files + responsibilities)
+
+This is the clean minimum that stays deterministic and extensible:
+
+referencePack/types.ts
+
+Px, ViewAxis, ViewCal, ViewDef, ReferencePack
+
+referencePack/io/loadReferencePack.ts
+
+loads pack.json, resolves image URLs
+
+referencePack/render/ReferencePlane.tsx (R3F component)
+
+builds plane geometry in meters, loads texture, applies opacity, places plane at fixed offset per axis, applies centerline rotation
+
+referencePack/calibration/CalibrationTool.ts
+
+click-state machine: scale bar → centerline → anchors → optional origin
+
+referencePack/calibration/picking.ts
+
+raycast to plane → UV → pixel coords (exactly what you need to store)
+
+referencePack/io/saveReferencePack.ts
+
+stable JSON stringify, write pack
+
+The approach “ReferencePlane per view” with a plane mesh + texture + orthographic camera + controls is explicitly the intended pattern. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Calibration UX (tight, no overengineering)
+
+Per view, the user clicks:
+
+Scale bar endpoints (1m) → compute pxPerMeter
+
+Centerline endpoints → store centerlinePx
+
+AnchorA + AnchorB on centerline (front/back)
+
+Origin optional (otherwise default to centerline midpoint) 
+
+MODELMAKER_MASTER_MONOLITH
+
+That’s it. Don’t do “smart detection” first — it slows you down and makes it fragile. 
+
+MODELMAKER_MASTER_MONOLITH
+
+R3F ReferencePlane skeleton (production-grade minimum)
+// ReferencePlane.tsx
+import * as THREE from "three";
+import { useMemo } from "react";
+import { useLoader } from "@react-three/fiber";
+
+type Px = [number, number];
+type ViewAxis = "TOP" | "SIDE" | "FRONT" | "REAR";
+
+interface ViewCal {
+  pxPerMeter: number;
+  originPx: Px;
+  centerlinePx: [Px, Px];
+  anchorA_Px: Px;
+  anchorB_Px: Px;
+}
+
+interface ViewDef {
+  imageUrl: string;
+  axis: ViewAxis;
+  cal: ViewCal;
+  opacity: number;
+  crop?: { x: number; y: number; width: number; height: number } | null;
+}
+
+function centerlineAngle(cal: ViewCal): number {
+  const [a, b] = cal.centerlinePx;
+  return Math.atan2(b[1] - a[1], b[0] - a[0]);
+}
+
+export function ReferencePlane({
+  view,
+  imageSizePx,     // { w: number; h: number } from image metadata
+  constantPos,     // e.g. Y_max+margin for TOP, etc.
+}: {
+  view: ViewDef;
+  imageSizePx: { w: number; h: number };
+  constantPos: number;
+}) {
+  const texture = useLoader(THREE.TextureLoader, view.imageUrl);
+
+  const { planeWm, planeHm, rotZ, worldQuat, worldPos } = useMemo(() => {
+    const mpp = 1 / view.cal.pxPerMeter;
+    const planeWm = imageSizePx.w * mpp;
+    const planeHm = imageSizePx.h * mpp;
+
+    const theta = centerlineAngle(view.cal);
+    const rotZ = -theta; // rotate image so centerline becomes horizontal
+
+    // Orient plane into world depending on axis (so its local u/v match expected mapping)
+    // We'll build a quaternion that maps a default XY plane into the correct world plane.
+    const q = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+
+    switch (view.axis) {
+      case "TOP":
+        // default PlaneGeometry is in XY; we want u->X and v->Z, plane at Y=constantPos
+        q.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, rotZ));
+        pos.set(0, constantPos, 0);
+        break;
+      case "SIDE":
+        // want u->X and v->Y, plane at Z=constantPos
+        q.setFromEuler(new THREE.Euler(0, 0, rotZ));
+        pos.set(0, 0, constantPos);
+        break;
+      case "FRONT":
+        // want u->Z and v->Y, plane at X=constantPos
+        q.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // rotate XY plane so X->Z
+        // rotZ could be applied around plane normal if needed later
+        pos.set(constantPos, 0, 0);
+        break;
+      case "REAR":
+        q.setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
+        pos.set(constantPos, 0, 0);
+        break;
+    }
+
+    return { planeWm, planeHm, rotZ, worldQuat: q, worldPos: pos };
+  }, [view, imageSizePx, constantPos]);
+
+  texture.flipY = false;
+
+  const geom = useMemo(() => new THREE.PlaneGeometry(planeWm, planeHm), [planeWm, planeHm]);
+
+  const mat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: view.opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    [texture, view.opacity]
+  );
+
+  return (
+    <mesh geometry={geom} material={mat} position={worldPos} quaternion={worldQuat} />
+  );
+}
+
+
+This respects the core: plane sized in meters from pxPerMeter, texture underlay, determinism, and the “per-view plane” pattern. 
+
+MODELMAKER_MASTER_MONOLITH
+
+The one “gotcha” you must implement correctly
+Click picking must return image pixel coordinates, not world coords
+
+Workflow:
+
+raycast against the view plane mesh
+
+get intersection uv
+
+convert uv → pixel (with flip handling consistent with texture.flipY=false)
+
+store those pixels into pack.json fields
+
+Once this is correct, everything downstream becomes mechanical.
+
+Next move (no fluff)
+
+If you want me to keep going immediately, the fastest high-leverage follow-up is:
+
+Implement picking.ts (ray→uv→px) + the calibration state machine
+
+Save/load pack.json deterministically
+
+Show all 4 planes simultaneously with toggles + opacity sliders
+
+That completes Step 1 exactly as specified and unlocks Step 2 (Curve-First Generator) cleanly. 
+
+MODELMAKER_MASTER_MONOLITH
+
+Sources
+proceed
+Thought for 3m 36s
+
+Alright. We’re going to make “draw a line → it becomes topology → perfect quads appear” an actual deterministic compiler loop, not “draw → approximate → remesh”.
+
+Below is the next load-bearing layer:
+
+Ortho planes + pixel-perfect picking (so every click is a stable px coord you can serialize)
+
+Calibration state machine (scale bar → centerline → origin → anchors)
+
+“Curve-on-surface” as an implicit object (stored as equation + ports, not baked points)
+
+Patch-graph recompilation (SharedBoundary insertion → template quad emission)
+
+AnnularQuadPatch (the minimal “sphere → draw loop → instant quad rings” proof)
+
+Everything here is designed to align with the monolith’s ReferencePack + mapping rules (texture flipY, axis mappings, calibration clicks, etc.). 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+0) The invariant: we never store “the truth” as triangles
+
+Truth = your field graph / SDF graph.
+
+A drawn curve becomes a Curtain (a ruled surface) + an implicit intersection curve with the field, stored as solve(d(field, S(u,v))=0) plus ports.
+
+Mesh is just a compiled view, regenerated locally by patch templates whenever topology changes.
+
+That “ports stop drift” principle is explicitly in orthobuilder (this is what prevents sliding/flip/“the smile moved”). 
+
+orthobuilder
+
+1) Ortho plane picking that round-trips to pixels perfectly
+
+Key details from the monolith you want to preserve:
+
+texture.flipY = false (do not silently flip the image). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Plane mapping rules (TOP/SIDE/FRONT/REAR local→world). 
+
+MODELMAKER_MASTER_MONOLITH
+
+Calibration clicks store pxPerMeter, originPx, centerlinePx, anchorA_Px, anchorB_Px. 
+
+MODELMAKER_MASTER_MONOLITH
+
+ 
+
+MODELMAKER_MASTER_MONOLITH
+
+Types (extend to 6 views now)
+// src/ortho/types.ts
+export type Px = [number, number];
+
+export type ViewAxis6 =
+  | "TOP"
+  | "BOTTOM"
+  | "SIDE_LEFT"
+  | "SIDE_RIGHT"
+  | "FRONT"
+  | "REAR";
+
+export interface ViewCal {
+  pxPerMeter: number;
+  originPx: Px;                       // pixel location that maps to (u,v)=(0,0)
+  centerlinePx: [Px, Px];             // for rotation
+  anchorA_Px?: Px;
+  anchorB_Px?: Px;
+  nudgeTranslationPx?: Px;
+  nudgeRotationRad?: number;
+}
+
+export interface ViewDef {
+  imageUrl: string;
+  axis: ViewAxis6;
+  cal: ViewCal;
+  opacity: number;
+  crop?: { x: number; y: number; width: number; height: number };
+}
+
+export interface ReferencePack6 {
+  id: string;
+  units: "meter";
+  views: Record<string, ViewDef>;
+  global?: {
+    world_origin?: [number, number, number];
+    shared_anchors?: Record<string, [number, number, number]>;
+  };
+}
+
+Build the plane + pick “pixel coordinates” from pointer events
+
+This gives you: world point, plane-local meters, and pixel coords that exactly match serialization.
+
+// src/ortho/planeMath.ts
+import * as THREE from "three";
+import { Px, ViewCal } from "./types";
+
+export function centerlineAngle(cal: ViewCal): number {
+  const [a, b] = cal.centerlinePx;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  return Math.atan2(dy, dx);
+}
+
+export function metersPerPx(cal: ViewCal): number {
+  return 1 / cal.pxPerMeter;
+}
+
+// Convert plane-local (u right, v down) in meters -> pixel coords
+export function uvMetersToPx(u: number, v: number, cal: ViewCal): Px {
+  // u,v are meters in the *rotated* metric plane basis (after centerline alignment),
+  // but since we also rotate the plane mesh by that same angle, local coords already match.
+  const x = cal.originPx[0] + u * cal.pxPerMeter;
+  const y = cal.originPx[1] + v * cal.pxPerMeter;
+  return [x, y];
+}
+
+// Convert pixel coords -> plane-local meters (u right, v down)
+export function pxToUvMeters(px: Px, cal: ViewCal): { u: number; v: number } {
+  const mpp = metersPerPx(cal);
+  return {
+    u: (px[0] - cal.originPx[0]) * mpp,
+    v: (px[1] - cal.originPx[1]) * mpp,
+  };
+}
+
+// Plane-local coordinates from raycast point
+// Assumes plane geometry is XY, local +x right, local +y up.
+// We choose: u = x, v = -y (so v is down, matching image convention).
+export function localPointToUvMeters(localPt: THREE.Vector3): { u: number; v: number } {
+  return { u: localPt.x, v: -localPt.y };
+}
+
+// src/ortho/OrthoPlane.tsx
+import * as THREE from "three";
+import React, { useMemo, useRef } from "react";
+import { useLoader } from "@react-three/fiber";
+import { TextureLoader } from "three";
+import { ViewDef } from "./types";
+import { centerlineAngle, localPointToUvMeters, uvMetersToPx } from "./planeMath";
+
+type Props = {
+  view: ViewDef;
+  planeSizeMeters: { w: number; h: number };     // derived from image px * mpp
+  constantPos: number;                            // where you place this plane in world
+  onPick?: (info: {
+    world: THREE.Vector3;
+    u: number;
+    v: number;
+    px: [number, number];
+  }) => void;
+};
+
+export function OrthoPlane({ view, planeSizeMeters, constantPos, onPick }: Props) {
+  const meshRef = useRef<THREE.Mesh>(null!);
+
+  const tex = useLoader(TextureLoader, view.imageUrl);
+  // Important from the monolith: do not flip textures. :contentReference[oaicite:8]{index=8}
+  tex.flipY = false;
+
+  const material = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        opacity: view.opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    [tex, view.opacity]
+  );
+
+  const geom = useMemo(
+    () => new THREE.PlaneGeometry(planeSizeMeters.w, planeSizeMeters.h),
+    [planeSizeMeters.w, planeSizeMeters.h]
+  );
+
+  // Rotate the plane so its “centerline” aligns to the model axis.
+  const theta = centerlineAngle(view.cal);
+  const nudge = view.cal.nudgeRotationRad ?? 0;
+  const rotZ = -(theta + nudge);
+
+  // Positioning: do your standard offsets by view axis in the parent;
+  // this component only knows “constantPos”.
+  const position = useMemo(() => new THREE.Vector3(0, 0, 0), []);
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={geom}
+      material={material}
+      rotation={[0, 0, rotZ]}
+      position={position}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (!onPick || !meshRef.current) return;
+
+        const world = e.point.clone();
+        const local = meshRef.current.worldToLocal(world.clone());
+        const { u, v } = localPointToUvMeters(local);
+
+        const px = uvMetersToPx(u, v, view.cal);
+        onPick({ world, u, v, px });
+      }}
+    />
+  );
+}
+
+
+That’s the “pixel-perfect click plumbing” you need before anything else.
+
+2) Calibration state machine (exactly the click sequence you want)
+
+The monolith’s calibration math is the correct stable core:
+
+pxPerMeter = ||B-A|| / meters 
+
+MODELMAKER_MASTER_MONOLITH
+
+Centerline angle atan2 
+
+MODELMAKER_MASTER_MONOLITH
+
+Save pack.json for reproducibility 
+
+MODELMAKER_MASTER_MONOLITH
+
+Here’s a compact calibration controller you can drop into your UI:
+
+// src/ortho/calibration/calibrationState.ts
+import { Px, ViewCal } from "../types";
+
+export type CalStep =
+  | "SCALE_A"
+  | "SCALE_B"
+  | "CENTERLINE_A"
+  | "CENTERLINE_B"
+  | "ORIGIN"
+  | "ANCHOR_A"
+  | "ANCHOR_B"
+  | "DONE";
+
+export interface CalibrationDraft {
+  step: CalStep;
+  scaleA?: Px;
+  scaleB?: Px;
+  knownMeters?: number;
+  centerA?: Px;
+  centerB?: Px;
+  origin?: Px;
+  anchorA?: Px;
+  anchorB?: Px;
+  nudgeTranslationPx?: Px;
+  nudgeRotationRad?: number;
+}
+
+export function computePxPerMeter(a: Px, b: Px, meters: number): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const dpx = Math.sqrt(dx * dx + dy * dy);
+  return dpx / meters;
+}
+
+export function finalizeCalibration(d: CalibrationDraft): ViewCal {
+  if (!d.scaleA || !d.scaleB || !d.knownMeters) {
+    throw new Error("Scale calibration incomplete");
+  }
+  if (!d.centerA || !d.centerB) {
+    throw new Error("Centerline incomplete");
+  }
+  const pxPerMeter = computePxPerMeter(d.scaleA, d.scaleB, d.knownMeters);
+
+  const originPx: Px = d.origin ?? [
+    (d.centerA[0] + d.centerB[0]) / 2,
+    (d.centerA[1] + d.centerB[1]) / 2,
+  ]; // default origin midpoint :contentReference[oaicite:12]{index=12}
+
+  return {
+    pxPerMeter,
+    originPx,
+    centerlinePx: [d.centerA, d.centerB],
+    anchorA_Px: d.anchorA,
+    anchorB_Px: d.anchorB,
+    nudgeTranslationPx: d.nudgeTranslationPx,
+    nudgeRotationRad: d.nudgeRotationRad,
+  };
+}
+
+
+This gives you a clean ViewCal that matches the monolith schema.
+
+3) “Curve on surface” as an implicit object (equation + ports, not baked points)
+
+This is where your “no drift / no bloat / no approximations in the truth” actually becomes code.
+
+Core interfaces
+// src/model/field.ts
+import * as THREE from "three";
+
+export interface Field {
+  eval(p: THREE.Vector3): number;      // signed distance
+  grad(p: THREE.Vector3): THREE.Vector3; // gradient for Newton
+}
+
+// src/model/curves.ts
+import * as THREE from "three";
+
+export interface Curve2D {
+  // in the metric plane coordinates of the drawing view: u right, v down (meters)
+  eval(t: number): { u: number; v: number };
+  // ports live in parameter space; they are the invariants
+  ports: { name: string; t: number }[];
+}
+
+export interface SurfaceCurve {
+  id: string;
+  // The truth: for each t, we solve intersection with the field on demand.
+  eval(t: number): THREE.Vector3;
+  ports: { name: string; t: number }[];
+}
+
+Curtain intersection solver (stable, branch-tracked)
+
+We solve along the view-normal direction so that the curve stays exactly what it was in the drawing plane.
+
+// src/model/cutCurtainIntersect.ts
+import * as THREE from "three";
+import { Field } from "./field";
+import { Curve2D, SurfaceCurve } from "./curves";
+
+type Curtain = {
+  origin: (t: number) => THREE.Vector3; // base point on curtain for param t
+  dir: THREE.Vector3;                   // curtain extrusion direction (unit)
+};
+
+function newtonOnRay(params: {
+  field: Field;
+  ro: THREE.Vector3;
+  rd: THREE.Vector3;
+  t0: number;               // initial distance along ray
+  maxIter?: number;
+  tol?: number;
+}): number {
+  const { field, ro, rd } = params;
+  let x = params.t0;
+  const maxIter = params.maxIter ?? 30;
+  const tol = params.tol ?? 1e-10;
+
+  for (let i = 0; i < maxIter; i++) {
+    const p = ro.clone().addScaledVector(rd, x);
+    const f = field.eval(p);
+    if (Math.abs(f) < tol) return x;
+
+    const g = field.grad(p);
+    const df = g.dot(rd); // derivative along ray
+    if (Math.abs(df) < 1e-12) break; // fallback to safer method upstream
+
+    x = x - f / df;
+  }
+  return x;
+}
+
+// A safer bracket+Newton hybrid for ugly cases.
+function solveRaySDF(params: {
+  field: Field;
+  ro: THREE.Vector3;
+  rd: THREE.Vector3;
+  tPrev?: number;
+}): number {
+  const { field, ro, rd, tPrev } = params;
+
+  // 1) Use continuity: previous solution is the best branch selector.
+  let t0 = tPrev ?? 0;
+
+  // 2) Quick Newton.
+  let t = newtonOnRay({ field, ro, rd, t0 });
+  const p = ro.clone().addScaledVector(rd, t);
+  if (Math.abs(field.eval(p)) < 1e-8) return t;
+
+  // 3) If Newton didn’t settle, do a small bracket search around t0.
+  let a = t0 - 2;
+  let b = t0 + 2;
+  let fa = field.eval(ro.clone().addScaledVector(rd, a));
+  let fb = field.eval(ro.clone().addScaledVector(rd, b));
+
+  // expand bracket deterministically
+  for (let k = 0; k < 20 && fa * fb > 0; k++) {
+    a -= 2;
+    b += 2;
+    fa = field.eval(ro.clone().addScaledVector(rd, a));
+    fb = field.eval(ro.clone().addScaledVector(rd, b));
+  }
+  if (fa * fb > 0) {
+    throw new Error("Curtain intersection: could not bracket a root (curve misses surface).");
+  }
+
+  // bisection
+  for (let it = 0; it < 60; it++) {
+    const m = 0.5 * (a + b);
+    const fm = field.eval(ro.clone().addScaledVector(rd, m));
+    if (Math.abs(fm) < 1e-10) return m;
+    if (fa * fm <= 0) {
+      b = m; fb = fm;
+    } else {
+      a = m; fa = fm;
+    }
+  }
+  return 0.5 * (a + b);
+}
+
+export function makeSurfaceCurveFromCurtain(params: {
+  id: string;
+  curve2D: Curve2D;
+  curtain: Curtain;
+  field: Field;
+}): SurfaceCurve {
+  let tPrev: number | undefined = undefined;
+
+  return {
+    id: params.id,
+    ports: params.curve2D.ports,
+    eval: (t: number) => {
+      const base = params.curtain.origin(t);        // exactly preserves 2D curve
+      const dist = solveRaySDF({ field: params.field, ro: base, rd: params.curtain.dir, tPrev });
+      tPrev = dist;
+      return base.clone().addScaledVector(params.curtain.dir, dist);
+    },
+  };
+}
+
+
+This is the key “no drift” mechanism: the curve is always computed from (SVG curve) ∩ (field) with branch continuity, never baked.
+
+4) SharedBoundary + PatchGraph: topology insertion, not remeshing
+
+Now we formalize what Grok summarized:
+
+A drawn curve is promoted to SharedBoundary.
+
+Patch graph is updated by split / insert / merge operations.
+
+Only affected patches recompile.
+
+Quads are emitted by templates (annular, ribbon, Coons/Gordon).
+
+Patch graph minimal types
+// src/model/patch/patchGraph.ts
+import { SurfaceCurve } from "../curves";
+
+export type BoundaryRole = "SEAM" | "CUT" | "CREASE" | "GUIDE";
+
+export interface SharedBoundary {
+  id: string;
+  curve: SurfaceCurve;     // implicit curve-on-surface
+  role: BoundaryRole;
+  // seam rules:
+  truthMode: "AUTHORITATIVE" | "SOFT";
+}
+
+export interface Patch {
+  id: string;
+  // boundary loops (closed) or boundary chains (open)
+  boundaries: string[]; // SharedBoundary ids, ordered
+  template: "ANNULAR_QUAD" | "COONS_QUAD" | "RIBBON_QUAD" | "FALLBACK_DC";
+  params: Record<string, any>;
+}
+
+export interface PatchGraph {
+  boundaries: Record<string, SharedBoundary>;
+  patches: Record<string, Patch>;
+}
+
+5) AnnularQuadPatch (the “sphere → draw loop → instant quad rings” proof)
+
+This is your first undeniable milestone.
+
+What “perfect” means here
+
+Topology is perfect: clean quads, predictable rings, no T-junctions, seam control.
+
+Geometry is exact with respect to the field: every vertex is solved back onto d(p)=0 (Newton with gradient), so it doesn’t drift off the implicit surface.
+
+Generic annular template (works for any field)
+
+It takes:
+
+B0(s) outer loop
+
+B1(s) inner loop
+
+M segments around
+
+R radial rings
+
+and emits (R+1) × M vertices and R × M quads.
+
+// src/model/patch/templates/annularQuad.ts
+import * as THREE from "three";
+import { Field } from "../../field";
+import { SurfaceCurve } from "../../curves";
+
+export type QuadMesh = {
+  positions: Float32Array;
+  quads: Uint32Array; // 4 indices per quad
+};
+
+// project an initial guess back onto the implicit surface
+function snapToSurface(field: Field, p0: THREE.Vector3): THREE.Vector3 {
+  let p = p0.clone();
+  for (let i = 0; i < 20; i++) {
+    const f = field.eval(p);
+    if (Math.abs(f) < 1e-10) return p;
+    const g = field.grad(p);
+    const gg = g.lengthSq();
+    if (gg < 1e-18) break;
+    // Newton step along gradient
+    p = p.addScaledVector(g, -f / gg);
+  }
+  return p;
+}
+
+export function buildAnnularQuadPatch(params: {
+  field: Field;
+  outer: SurfaceCurve;     // B0
+  inner: SurfaceCurve;     // B1
+  M: number;
+  R: number;
+}): QuadMesh {
+  const { field, outer, inner, M, R } = params;
+
+  const V = (R + 1) * M;
+  const positions = new Float32Array(V * 3);
+
+  // helper: wrap i
+  const idx = (r: number, i: number) => r * M + ((i % M) + M) % M;
+
+  // 1) sample both loops consistently by parameter t in [0,1)
+  // In your full system: use PANP + ports to set seam t=0 and arc-length for uniform spacing.
+  // For this milestone: uniform t is fine; the *topological* behavior is the point.
+  for (let i = 0; i < M; i++) {
+    const t = i / M;
+    const po = outer.eval(t);
+    const pi = inner.eval(t);
+
+    for (let r = 0; r <= R; r++) {
+      const u = r / R; // 0..1 radial blend
+
+      // initial guess in 3D
+      const pGuess = po.clone().lerp(pi, u);
+
+      // snap exactly to the surface field
+      const p = snapToSurface(field, pGuess);
+
+      const v = idx(r, i);
+      positions[3 * v + 0] = p.x;
+      positions[3 * v + 1] = p.y;
+      positions[3 * v + 2] = p.z;
+    }
+  }
+
+  // 2) emit quads
+  const Q = R * M;
+  const quads = new Uint32Array(Q * 4);
+  let q = 0;
+
+  for (let r = 0; r < R; r++) {
+    for (let i = 0; i < M; i++) {
+      const a = idx(r, i);
+      const b = idx(r, i + 1);
+      const c = idx(r + 1, i + 1);
+      const d = idx(r + 1, i);
+
+      quads[4 * q + 0] = a;
+      quads[4 * q + 1] = b;
+      quads[4 * q + 2] = c;
+      quads[4 * q + 3] = d;
+      q++;
+    }
+  }
+
+  return { positions, quads };
+}
+
+The sphere proof (ultra-clean, analytic field)
+
+Now we define a sphere field and generate:
+
+inner = the curve you drew (curtain ∩ sphere)
+
+outer = a deterministic offset ring (for the milestone we can pick a second ring by rule)
+
+// src/model/fields/sphereField.ts
+import * as THREE from "three";
+import { Field } from "../field";
+
+export function makeSphereField(center: THREE.Vector3, r: number): Field {
+  return {
+    eval: (p) => p.clone().sub(center).length() - r,
+    grad: (p) => {
+      const v = p.clone().sub(center);
+      const len = v.length();
+      if (len < 1e-12) return new THREE.Vector3(0, 1, 0);
+      return v.multiplyScalar(1 / len);
+    },
+  };
+}
+
+
+Once you wire your drawing tool to create a Curve2D (SVG bezier in TOP view), you build the curtain and produce the surface curve via makeSurfaceCurveFromCurtain(). Then you pick an offset rule (for the milestone, simple and deterministic):
+
+Rule: create a second loop by scaling the TOP curve inward by a factor k in the drawing plane, then intersect again (this is clean on a sphere and stays deterministic).
+
+That gives you outer and inner loops and you call buildAnnularQuadPatch.
+
+6) Where “perfect retopo” actually comes from (and why this beats QuadriFlow)
+
+QuadriFlow / MIQ remeshing is global optimization on a sampled surface: it can’t guarantee “this new curve is a true topological boundary and will never drift”.
+
+Your system does:
+
+Curve promoted to SharedBoundary immediately
+
+Patch graph split/insert is topological, deterministic
+
+Quad emission is template-driven
+
+Geometry is snapped back to the field (so it respects the analytic truth)
+
+That’s exactly the “compiler behavior” Grok was pointing at, and it’s the same philosophy as the monolith’s “seam-perfect” sampling: if two consumers share the same evaluator, the seam matches by construction, not by guesswork. 
+
+MODELMAKER_MASTER_MONOLITH
+
+7) Next exact step: ports + seam control in annular patches
+
+Right now, t=i/M sampling works, but your real system needs port-locked parameterization:
+
+Choose a canonical seam port P0 on the loop (e.g., “left corner”, “bow tip”).
+
+Define t=0 at that port and traverse with consistent winding. (This is in your face loop rules; same principle.) 
+
+orthobuilder
+
+Build an arc-length table so the quad columns become equal-length in 3D, not equal-parameter.
+
+That’s the next upgrade that turns “good rings” into “surgical rings”.
+
+What I would implement immediately (the shortest path to proof)
+
+Load one TOP ortho and get pixel-perfect picking (section 1).
+
+Calibration tool: click scale bar, centerline, origin (section 2).
+
+Sphere field as the base truth.
+
+Draw a closed curve in TOP (SVG).
+
+Create curtain + surface curve intersection (section 3).
+
+Generate annular quads around it (section 5).
+
+Add a second curve → verify topology inserts cleanly with no global damage.
+
+When that works, you’ve proven the entire doctrine: new line = new topology.

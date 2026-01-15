@@ -18,24 +18,24 @@ export const DrawerContainer: React.FC<DrawerContainerProps> = ({
   children,
   className,
 }) => {
-  if (!isOpen) return null;
-  
   return (
     <div 
       className={cn(
-        "absolute top-0 bottom-0 right-12 w-80 bg-panel border-l border-border/50",
-        "animate-slide-in-right z-30",
+        // Fixed width, transitions smoothly in/out
+        "h-full bg-panel border-l border-border/50 flex flex-col overflow-hidden",
+        "transition-all duration-300 ease-out",
+        isOpen ? "w-80" : "w-0",
         className
       )}
     >
       {/* Header */}
       {title && (
-        <div className="h-10 flex items-center justify-between px-4 border-b border-border/30">
-          <span className="text-sm font-medium">{title}</span>
+        <div className="h-10 flex items-center justify-between px-4 border-b border-border/30 flex-shrink-0">
+          <span className="text-sm font-medium whitespace-nowrap">{title}</span>
           <Button
             variant="ghost"
             size="icon"
-            className="w-6 h-6"
+            className="w-6 h-6 flex-shrink-0"
             onClick={onClose}
           >
             <X className="w-4 h-4" />
@@ -44,7 +44,10 @@ export const DrawerContainer: React.FC<DrawerContainerProps> = ({
       )}
       
       {/* Content */}
-      <div className="overflow-y-auto scrollbar-thin h-[calc(100%-2.5rem)]">
+      <div className={cn(
+        "flex-1 overflow-y-auto scrollbar-thin overflow-x-hidden",
+        !isOpen && "invisible"
+      )}>
         {children}
       </div>
     </div>

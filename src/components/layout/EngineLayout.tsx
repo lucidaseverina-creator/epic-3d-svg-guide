@@ -274,31 +274,34 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
           />
         </div>
         
-        {/* Mini Bar (Layers) */}
-        <MiniBar
-          objects={scene.objects}
-          selectedId={scene.selectedObjectId}
-          onSelect={selectObject}
-          onToggleVisibility={handleToggleVisibility}
-          onToggleLock={handleToggleLock}
-        />
-        
-        {/* Right Icon Bar (Drawers) */}
-        <IconBar
-          side="right"
-          activeDrawer={activeDrawer}
-          onDrawerToggle={handleDrawerToggle}
-          supportsSDF={currentEngine === 'sdflux'}
-        />
-        
-        {/* Drawer Container */}
-        <DrawerContainer
-          isOpen={activeDrawer !== null}
-          title={getDrawerTitle()}
-          onClose={() => setActiveDrawer(null)}
-        >
-          {renderDrawerContent()}
-        </DrawerContainer>
+        {/* Right Panel Container - includes drawer, minibar, and icon bar */}
+        <div className="flex h-full flex-shrink-0">
+          {/* Drawer Container - slides out from right, pushes content */}
+          <DrawerContainer
+            isOpen={activeDrawer !== null}
+            title={getDrawerTitle()}
+            onClose={() => setActiveDrawer(null)}
+          >
+            {renderDrawerContent()}
+          </DrawerContainer>
+          
+          {/* Mini Bar (Layers) - always visible, stays next to icon bar */}
+          <MiniBar
+            objects={scene.objects}
+            selectedId={scene.selectedObjectId}
+            onSelect={selectObject}
+            onToggleVisibility={handleToggleVisibility}
+            onToggleLock={handleToggleLock}
+          />
+          
+          {/* Right Icon Bar (Drawers) - rightmost position */}
+          <IconBar
+            side="right"
+            activeDrawer={activeDrawer}
+            onDrawerToggle={handleDrawerToggle}
+            supportsSDF={currentEngine === 'sdflux'}
+          />
+        </div>
       </div>
     </div>
   );
