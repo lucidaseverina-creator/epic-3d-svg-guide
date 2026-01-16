@@ -18,6 +18,7 @@ import { LightingDrawer } from '@/components/drawers/LightingDrawer';
 import { PropertiesDrawer } from '@/components/drawers/PropertiesDrawer';
 import { BooleanPanel, SDFNode, SDFPrimitiveType, BooleanOp } from '@/components/parametric/BooleanPanel';
 import { SDFSettingsDrawer } from '@/components/drawers/SDFSettingsDrawer';
+import { LayersDrawer } from '@/components/drawers/LayersDrawer';
 
 interface EngineLayoutProps {
   engineType?: EngineType;
@@ -51,7 +52,24 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   // ============================================
   // SDF Boolean State Management
   // ============================================
-  const [sdfNodes, setSdfNodes] = useState<SDFNode[]>([]);
+  const [sdfNodes, setSdfNodes] = useState<SDFNode[]>([
+    {
+      id: 'sdf-default-sphere',
+      name: 'Sphere 1',
+      type: 'sphere',
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      rotation: { x: 0, y: 0, z: 0 },
+      visible: true,
+      locked: false,
+      material: {
+        color: 'hsl(220, 70%, 50%)',
+        roughness: 0.5,
+        metallic: 0.0,
+      },
+      primitiveParams: { radius: 0.5 },
+    },
+  ]);
   const [selectedSdfNodeId, setSelectedSdfNodeId] = useState<string | null>(null);
   
   // SDF Settings
@@ -142,10 +160,22 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
     setSelectedSdfNodeId(id);
   }, [sdfNodes]);
 
+  // SDF visibility toggle
+  const handleToggleSdfVisibility = useCallback((id: string) => {
+    setSdfNodes(prev => prev.map(n => n.id === id ? { ...n, visible: !n.visible } : n));
+  }, []);
+
+  // SDF lock toggle
+  const handleToggleSdfLock = useCallback((id: string) => {
+    setSdfNodes(prev => prev.map(n => n.id === id ? { ...n, locked: !n.locked } : n));
+  }, []);
+
   // Render SDF faces when nodes exist
   const sdfFaces = useMemo(() => {
     if (sdfNodes.length === 0) return [];
-    return renderSDFNodes(sdfNodes as any, { quality: sdfQuality });
+    const faces = renderSDFNodes(sdfNodes as any, { quality: sdfQuality });
+    console.log('SDF Rendering:', { nodeCount: sdfNodes.length, faceCount: faces.length });
+    return faces;
   }, [sdfNodes, sdfQuality]);
   
   // Scene state from hook
@@ -318,6 +348,25 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
             onToggleLock={handleToggleLock}
           />
         );
+      case 'layers':
+        return (
+          <LayersDrawer
+            sceneObjects={scene.objects}
+            selectedSceneId={scene.selectedObjectId}
+            onSelectSceneObject={selectObject}
+            onDeleteSceneObject={deleteObject}
+            onToggleSceneVisibility={handleToggleVisibility}
+            onToggleSceneLock={handleToggleLock}
+            sdfNodes={sdfNodes}
+            selectedSdfId={selectedSdfNodeId}
+            onSelectSdfNode={setSelectedSdfNodeId}
+            onAddSdfNode={handleAddSdfNode}
+            onDeleteSdfNode={handleDeleteSdfNode}
+            onDuplicateSdfNode={handleDuplicateSdfNode}
+            onToggleSdfVisibility={handleToggleSdfVisibility}
+            onToggleSdfLock={handleToggleSdfLock}
+          />
+        );
       case 'lighting':
         return (
           <LightingDrawer
@@ -373,6 +422,7 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   // Get drawer title
   const getDrawerTitle = (): string => {
     switch (activeDrawer) {
+      case 'layers': return 'Layers';
       case 'objects': return 'Objects';
       case 'camera': return 'Camera';
       case 'lighting': return 'Lighting';
