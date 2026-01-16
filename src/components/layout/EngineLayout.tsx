@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { EngineType, ToolType, CameraPreset, RenderMode } from '@/types/engine';
+import { EngineType, ToolType, CameraPreset, RenderMode, ProjectedFace, Face } from '@/types/engine';
 import { useScene } from '@/hooks/useScene';
 import { renderScene, getDefaultConfig } from '@/lib/renderer';
 import { renderSDFNodes } from '@/lib/sdfRenderer';
+import { rotateEuler, project, add, calculateNormal, calculateCenter, normalize, dot } from '@/lib/math';
 
 import { TopBar } from '@/components/layout/TopBar';
 import { IconBar } from '@/components/layout/IconBar';
@@ -204,10 +205,82 @@ export const EngineLayout: React.FC<EngineLayoutProps> = ({
   // Actual viewport size (reported by <Viewport />)
   const [viewportSize, setViewportSize] = useState({ width: 1200, height: 700 });
 
-  // Render the scene with animation time
-  const projectedFaces = useMemo(() => {
+  // Render scene objects
+  const sceneFaces = useMemo(() => {
     return renderScene(scene, config, viewportSize.width, viewportSize.height, animationTime);
   }, [scene, config, viewportSize, animationTime]);
+
+  // Project SDF faces through the camera and merge with scene faces
+  const projectedFaces = useMemo(() => {
+    // Start with scene object faces
+    const allFaces: ProjectedFace[] = [...sceneFaces];
+    
+    // Project SDF faces through the camera
+    if (sdfFaces.length > 0) {
+      const cameraZ = scene.camera.position.z;
+      const cameraRotation = scene.camera.rotation;
+      const cameraPosition = scene.camera.position;
+      const { width, height } = viewportSize;
+      const fov = scene.camera.fov;
+      
+      // Scale factor to convert SDF units to scene units
+      const sdfScale = 80;
+      
+      for (const face of sdfFaces) {
+        // Scale and transform vertices from SDF space to scene space
+        const scaledVerts = face.verts.map(v => ({
+          x: v.x * sdfScale,
+          y: v.y * sdfScale,
+          z: v.z * sdfScale,
+        }));
+        
+        // Apply camera translation
+        const translatedVerts = scaledVerts.map(v => 
+          add(v, { x: -cameraPosition.x, y: -cameraPosition.y, z: 0 })
+        );
+        
+        // Apply camera rotation
+        const rotatedVerts = translatedVerts.map(v => rotateEuler(v, cameraRotation));
+        
+        // Calculate face center for depth sorting
+        const center = calculateCenter(rotatedVerts);
+        
+        // Calculate normal for backface culling
+        const normal = calculateNormal(rotatedVerts);
+        
+        // View-direction-based backface culling
+        const viewDir = normalize({
+          x: center.x,
+          y: center.y,
+          z: center.z + cameraZ,
+        });
+        
+        const dotProduct = dot(normal, viewDir);
+        if (dotProduct > 0.15) continue; // Skip backfaces
+        
+        // Project vertices to 2D
+        const projectedVerts = rotatedVerts.map(v => 
+          project(v, width, height, fov, cameraZ)
+        );
+        
+        // Use face color directly (SDF faces already have colors from materials)
+        allFaces.push({
+          verts: rotatedVerts,
+          projectedVerts,
+          color: face.color,
+          depth: center.z,
+          lightIntensity: 1,
+          objectId: face.objectId || 'sdf-mesh',
+          isSelected: false,
+        });
+      }
+    }
+    
+    // Sort all faces by depth (painter's algorithm)
+    allFaces.sort((a, b) => b.depth - a.depth);
+    
+    return allFaces;
+  }, [sceneFaces, sdfFaces, scene.camera, viewportSize]);
   
   // Handle drawer toggle
   const handleDrawerToggle = useCallback((drawerId: string) => {
