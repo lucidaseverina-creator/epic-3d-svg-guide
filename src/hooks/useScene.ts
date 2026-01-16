@@ -65,43 +65,9 @@ const defaultCamera: Camera = {
   far: 2000,
 };
 
-// Create initial scene
+// Create initial scene - empty objects array for SDF-focused workflow
 const createInitialScene = (): Scene => ({
-  objects: [
-    {
-      id: 'box-1',
-      name: 'Cube 1',
-      type: 'box',
-      position: { x: -80, y: 30, z: 0 },
-      rotation: { x: 0.3, y: 0.3, z: 0 },
-      scale: { x: 1, y: 1, z: 1 },
-      material: defaultMaterials.cyan,
-      visible: true,
-      locked: false,
-    },
-    {
-      id: 'sphere-1',
-      name: 'Sphere 1',
-      type: 'sphere',
-      position: { x: 80, y: -20, z: 20 },
-      rotation: { x: 0, y: 0, z: 0 },
-      scale: { x: 0.9, y: 0.9, z: 0.9 },
-      material: defaultMaterials.magenta,
-      visible: true,
-      locked: false,
-    },
-    {
-      id: 'torus-1',
-      name: 'Torus 1',
-      type: 'torus',
-      position: { x: 0, y: -60, z: -30 },
-      rotation: { x: 0.5, y: 0.2, z: 0 },
-      scale: { x: 1, y: 1, z: 1 },
-      material: defaultMaterials.yellow,
-      visible: true,
-      locked: false,
-    },
-  ],
+  objects: [],
   lights: getLightsForMode('night'),
   camera: defaultCamera,
   cursor3D: { x: 0, y: 0, z: 0 },
